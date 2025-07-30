@@ -22,8 +22,9 @@
 
 #include "Portability.h"
 #include <functional>
+#include <type_traits>
 
-namespace WPEFramework {
+namespace Thunder {
 
 template <bool PARAMETER>
 using EnableIfParameter = typename std::enable_if<PARAMETER, int>::type;
@@ -126,6 +127,9 @@ namespace Core {
             enum { Arguments = sizeof...(TArgs) };
         };
 
+        template<typename F>
+        using lambda_traits = func_traits<decltype(&F::operator())>;
+
         template< bool B, class T = void>
         using enable_if = std::enable_if<B, T>;
 
@@ -164,6 +168,26 @@ namespace Core {
         static bool const value = sizeof(chk<T>(0)) == sizeof(yes);                             \
     }
 
+// func: name of function that should be present
+// name: name of the struct that later can be used to override using SFINEA
+// T:    type on which it should be chekced if func is available. If only const versions of func need to be taken into account specify it as const T
+// R:    expected return type for func
+// Args: arguments that func should have, note it will also work if overrides of Func are available on T. Note: passing Args&&... itself is also allowed here to allow for variable parameters
+// use this macro instead of IS_MEMBER_AVAILABLE when the return type of the function does not have to be exactly the same but instead it can be convertible to the expected one
+#define IS_MEMBER_AVAILABLE_CONVERTIBLE(func, name)                                             \
+    template <typename T, typename R, typename... Args>                                         \
+    struct name {                                                                               \
+        typedef char yes[1];                                                                    \
+        typedef char no[2];                                                                     \
+        template <typename U,                                                                   \
+                  typename RR = decltype(std::declval<U>().func(std::declval<Args>()...)),      \
+                  typename Z = typename std::enable_if<std::is_convertible<RR, R>::value>::type>\
+        static yes& chk(int);                                                                   \
+        template <typename U>                                                                   \
+        static no& chk(...);                                                                    \
+        static bool const value = sizeof(chk<T>(0)) == sizeof(yes);                             \
+    }
+
 // func: name of function that should be present in the inheritance tree and accessable (public or protected)
 // name: name of the struct that later can be used to override using SFINEA
 // T:    type on which it should be chekced if func is available in the Inheritance tree. If only const versions of func need to be taken into account specify it as const T
@@ -171,14 +195,14 @@ namespace Core {
 // Args: arguments that func should have, note it will also work if overrides of Func are available on T. Note: passing Args&&... itself is also allowed here to allow for variable parameters
 #define IS_MEMBER_AVAILABLE_INHERITANCE_TREE(func, name)                                                                                             \
     template <bool, typename TT>                                                                                                                     \
-    struct name##_IsMemberAvailableCheck : public TT {                                                                                               \
-      using type = TT;                                                                                                                               \
+    struct name##_IsMemberAvailableCheck : public std::remove_reference<TT>::type {                                                                   \
+      using type = typename std::remove_reference<TT>::type;                                                                                         \
       template <typename TTT, typename... Args2>                                                                                                     \
       auto Verify() -> decltype( (TTT::func(std::declval<Args2>()...)));                                                                             \
     };                                                                                                                                               \
     template <typename TT>                                                                                                                           \
-    struct name##_IsMemberAvailableCheck<true, TT> : public TT {                                                                                     \
-      using type = const TT;                                                                                                                         \
+    struct name##_IsMemberAvailableCheck<true, TT> : public std::remove_reference<TT>::type {                                                         \
+      using type = const typename std::remove_reference<TT>::type;                                                                                   \
       template <typename TTT, typename... Args2>                                                                                                     \
       auto Verify() const -> decltype( (TTT::func(std::declval<Args2>()...)));                                                                       \
     };                                                                                                                                               \
@@ -187,12 +211,12 @@ namespace Core {
         typedef char yes[1];                                                                                                                         \
         typedef char no[2];                                                                                                                          \
         template <typename U,                                                                                                                        \
-                  typename RR = decltype(std::declval<name##_IsMemberAvailableCheck<std::is_const<U>::value, U>>().template Verify<U, Args...>()),   \
+                  typename RR = decltype(std::declval<name##_IsMemberAvailableCheck<std::is_const<typename std::remove_reference<U>::type>::value, U>>().template Verify<U, Args...>()), \
                   typename Z = typename std::enable_if<std::is_same<R, RR>::value>::type>                                                            \
         static yes& chk(int);                                                                                                                        \
         template <typename U>                                                                                                                        \
         static no& chk(...);                                                                                                                         \
-        static bool const value = sizeof(chk<T>(0)) == sizeof(yes);                                                                                  \
+        static bool const value = sizeof(chk<typename std::remove_reference<T>::type>(0)) == sizeof(yes);                                             \
     }
 
 

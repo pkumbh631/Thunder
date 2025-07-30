@@ -22,20 +22,24 @@
 #include "Module.h"
 #include "Channel.h"
 #include "Configuration.h"
-#include "MetaData.h"
+#include "Metadata.h"
 #include "System.h"
 #include "IPlugin.h"
 #include "IShell.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace PluginHost {
 
     class EXTERNAL Service : public IShell {
     private:
+        using Channels = std::vector<Channel*>;
+
         class EXTERNAL Config {
         public:
             Config() = delete;
+            Config(Config&&) = delete;
             Config(const Config&) = delete;
+            Config& operator=(Config&&) = delete;
             Config& operator=(const Config&) = delete;
 
             Config(const Plugin::Config& plugin, const string& webPrefix, const string& persistentPath, const string& dataPath, const string& volatilePath)
@@ -52,9 +56,7 @@ namespace PluginHost {
 
                 Update(plugin);
             }
-            ~Config()
-            {
-            }
+            ~Config() = default;
 
         public:
             inline bool IsSupported(const uint8_t number) const
@@ -65,21 +67,17 @@ namespace PluginHost {
             {
                 _config.Configuration = value;
             }
-            inline void Startup(const PluginHost::IShell::startup value)
+            inline void StartMode(const PluginHost::IShell::startmode value)
             {
-                _config.Startup = value;
-            }
-            inline void AutoStart(const bool value)
-            {
-                _config.AutoStart = value;
-            }
-            inline void Resumed(const bool value)
-            {
-                _config.Resumed = value;
+                _config.StartMode = value;
             }
             inline void SystemRootPath(const string& value)
             {
                 _config.SystemRootPath = value;
+            }
+            inline void Resumed(const bool value)
+            {
+                _config.Resumed = value;
             }
             inline const Plugin::Config& Configuration() const
             {
@@ -137,10 +135,6 @@ namespace PluginHost {
                 if (_versions.empty() == true) {
                     _versions.push_back(1);
                 }
-
-                _config.Startup = ((_config.AutoStart.Value() == true) ?
-                                   PluginHost::IShell::startup::ACTIVATED :
-                                   PluginHost::IShell::startup::DEACTIVATED);
             }
 
         private:
@@ -170,11 +164,9 @@ namespace PluginHost {
             #endif
             , _state(DEACTIVATED)
             , _config(plugin, webPrefix, persistentPath, dataPath, volatilePath)
-            #if THUNDER_RESTFULL_API
             , _notifiers()
-            #endif
         {
-            if ( (plugin.Startup.IsSet() == true) && (plugin.Startup.Value() == PluginHost::IShell::startup::UNAVAILABLE) ) {
+            if ( (plugin.StartMode.IsSet() == true) && (plugin.StartMode.Value() == PluginHost::IShell::startmode::UNAVAILABLE) ) {
                 _state = UNAVAILABLE;
             }
         }
@@ -254,21 +246,20 @@ namespace PluginHost {
         }
         bool Resumed() const override
         {
-            return ((_config.Configuration().Resumed.IsSet() ? _config.Configuration().Resumed.Value() : (_config.Configuration().Startup.Value() == PluginHost::IShell::startup::ACTIVATED)));
+            return ((_config.Configuration().Resumed.IsSet() ? _config.Configuration().Resumed.Value() : (_config.Configuration().StartMode.Value() == PluginHost::IShell::startmode::ACTIVATED)));
         }
         Core::hresult Resumed(const bool resumed) override
         {
             _config.Resumed(resumed);
             return (Core::ERROR_NONE);
         }
-        PluginHost::IShell::startup Startup() const override
+        PluginHost::IShell::startmode StartMode() const override
         {
-            return _config.Configuration().Startup.Value();
+            return _config.Configuration().StartMode.Value();
         }
-        Core::hresult Startup(const PluginHost::IShell::startup value) override
+        Core::hresult StartMode(const PluginHost::IShell::startmode value) override
         {
-            _config.Startup(value);
-            _config.AutoStart(value == PluginHost::IShell::startup::ACTIVATED);
+            _config.StartMode(value);
 
             return (Core::ERROR_NONE);
         }
@@ -331,12 +322,10 @@ namespace PluginHost {
         {
             return (_errorMessage);
         }
-        inline void GetMetaData(MetaData::Service& metaData) const
+        inline void GetMetadata(Metadata::Service& metaData) const
         {
             metaData = _config.Configuration();
-            #if THUNDER_RESTFULL_API
             metaData.Observers = static_cast<uint32_t>(_notifiers.size());
-            #endif
 
             // When we do this, we need to make sure that the Service does not change state, otherwise it might
             // be that the the plugin is deinitializing and the IStateControl becomes invalid during our run.
@@ -355,11 +344,42 @@ namespace PluginHost {
 
         bool IsWebServerRequest(const string& segment) const;
 
-        #if THUNDER_RESTFULL_API
         void Notification(const string& message);
-        #endif
  
         virtual Core::ProxyType<Core::JSON::IElement> Inbound(const string& identifier) = 0;
+
+        inline bool Subscribe(Channel& channel)
+        {
+            _notifierLock.Lock();
+
+            bool result = std::find(_notifiers.begin(), _notifiers.end(), &channel) == _notifiers.end();
+
+            if (result == true) {
+                if (channel.IsNotified() == true) {
+                    _notifiers.push_back(&channel);
+                }
+                else {
+                    result = false;
+                }
+            }
+
+            _notifierLock.Unlock();
+
+            return (result);
+        }
+        inline void Unsubscribe(Channel& channel)
+        {
+
+            _notifierLock.Lock();
+
+            Channels::iterator index(std::find(_notifiers.begin(), _notifiers.end(), &channel));
+
+            if (index != _notifiers.end()) {
+                _notifiers.erase(index);
+            }
+
+            _notifierLock.Unlock();
+        }
 
     protected:
         inline void Lock() const
@@ -378,37 +398,6 @@ namespace PluginHost {
         {
             _errorMessage = message;
         }
-        #if THUNDER_RESTFULL_API
-        inline bool Subscribe(Channel& channel)
-        {
-            _notifierLock.Lock();
-
-            bool result = std::find(_notifiers.begin(), _notifiers.end(), &channel) == _notifiers.end();
-
-            if (result == true) {
-                if (channel.IsNotified() == true) {
-                    _notifiers.push_back(&channel);
-                }
-            }
-
-            _notifierLock.Unlock();
-
-            return (result);
-        }
-        inline void Unsubscribe(Channel& channel)
-        {
-
-            _notifierLock.Lock();
-
-            std::list<Channel*>::iterator index(std::find(_notifiers.begin(), _notifiers.end(), &channel));
-
-            if (index != _notifiers.end()) {
-                _notifiers.erase(index);
-            }
-
-            _notifierLock.Unlock();
-        }
-        #endif
         #if THUNDER_RUNTIME_STATISTICS
         inline void IncrementProcessedRequests()
         {
@@ -425,9 +414,7 @@ namespace PluginHost {
     private:
         mutable Core::CriticalSection _adminLock;
 
-        #if THUNDER_RESTFULL_API
         Core::CriticalSection _notifierLock;
-        #endif
 
         #if THUNDER_RUNTIME_STATISTICS
         uint32_t _processedRequests;
@@ -443,10 +430,8 @@ namespace PluginHost {
         string _webURLPath;
         string _webServerFilePath;
 
-        #if THUNDER_RESTFULL_API
         // Keep track of people who want to be notified of changes.
-        std::list<Channel*> _notifiers;
-        #endif
+        Channels _notifiers;
     };
 }
 }

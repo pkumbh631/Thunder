@@ -22,11 +22,7 @@
 #include <limits>
 #include <memory>
 
-#ifdef PROCESSCONTAINERS_ENABLED
-#include "ProcessInfo.h"
-#endif
-
-namespace WPEFramework {
+namespace Thunder {
 namespace RPC {
 
     class ProcessShutdown;
@@ -38,8 +34,10 @@ namespace RPC {
         static constexpr TCHAR LoaderConfig[] = _T("/etc/ld.so.conf");
 
     public:
+        DynamicLoaderPaths(DynamicLoaderPaths&&) = delete;
         DynamicLoaderPaths(const DynamicLoaderPaths&) = delete;
-        DynamicLoaderPaths& operator= (const DynamicLoaderPaths&) = delete;
+        DynamicLoaderPaths& operator=(DynamicLoaderPaths&&) = delete;
+        DynamicLoaderPaths& operator=(const DynamicLoaderPaths&) = delete;
 
         DynamicLoaderPaths() 
             : _downloadLists()
@@ -120,6 +118,7 @@ namespace RPC {
     public:
         ProcessShutdown(ProcessShutdown&&) = delete;
         ProcessShutdown(const ProcessShutdown&) = delete;
+        ProcessShutdown& operator=(ProcessShutdown&&) = delete;
         ProcessShutdown& operator=(const ProcessShutdown&) = delete;
 
         ProcessShutdown()
@@ -140,7 +139,6 @@ namespace RPC {
 
             if (index != _destructors.end()) {
                 handler = index->second;
-                _destructors.erase(index);
             }
 
             _adminLock.Unlock();
@@ -151,12 +149,22 @@ namespace RPC {
                 handler->Destruct();
                 handler->Release();
             }
+
+            _adminLock.Lock();
+
+            index = _destructors.find(id);
+
+            if (index != _destructors.end()) {
+                _destructors.erase(index);
+            }
+
+            _adminLock.Unlock();
         }
         void Destruct(const uint32_t id, Communicator::MonitorableProcess& entry)
         {
             _adminLock.Lock();
 
-            if (_destructors.find(id) == _destructors.end()) {
+            if ((entry.IsTerminated() == false) && (_destructors.find(id) == _destructors.end())) {
                 entry.AddRef();
                 _destructors.emplace(std::piecewise_construct,
                     std::forward_as_tuple(id),
@@ -239,8 +247,22 @@ namespace RPC {
 
         Core::TextSegmentIterator places(Core::TextFragment(pathName), false, '|');
 
+#ifdef __APPLE__
+#ifdef VERSIONED_LIBRARY_LOADING
+    static const std::string suffixFilter = "*." + std::to_string(THUNDER_VERSION)+ ".dylib";
+#else
+    static const std::string suffixFilter = "*.dylib";
+#endif
+#else
+#ifdef VERSIONED_LIBRARY_LOADING
+    static const std::string suffixFilter = "*.so." + std::to_string(THUNDER_VERSION);
+#else
+    static const std::string suffixFilter = "*.so";
+#endif
+#endif
+
         while (places.Next() == true) {
-            Core::Directory index(places.Current().Text().c_str(), _T("*.so"));
+            Core::Directory index(places.Current().Text().c_str(), _T(suffixFilter.c_str()));
 
             while (index.Next() == true) {
                 // Check if this ProxySTub file is already loaded in this process space..
@@ -328,14 +350,15 @@ namespace RPC {
 
     void Communicator::ContainerProcess::Terminate() /* override */
     {
-        ASSERT(_container != nullptr);
-        g_destructor.Destruct(Id(), *this);
+        if (_container.IsValid() == true) {
+            g_destructor.Destruct(Id(), *this);
+        }
     }
 
     void Communicator::ContainerProcess::PostMortem() /* override */
     {
-        Core::process_t pid;
-        if ( (_container != nullptr) && ((pid = static_cast<Core::process_t>(_container->Pid())) != 0) ) {
+        pid_t pid;
+        if ( (_container.IsValid() == true) && ((pid = static_cast<pid_t>(_container->Pid())) != 0) ) {
             Core::ProcessInfo process(pid);
             process.Dump();
         }
@@ -344,12 +367,12 @@ namespace RPC {
 #endif
     // Definitions of static members
     uint8_t Communicator::_softKillCheckWaitTime = 10;
-    uint8_t Communicator::_hardKillCheckWaitTime = 4;;
+    uint8_t Communicator::_hardKillCheckWaitTime = 4;
 
-    PUSH_WARNING(DISABLE_WARNING_THIS_IN_MEMBER_INITIALIZER_LIST);
-
-    Communicator::Communicator(const Core::NodeId& node, const string& proxyStubPath)
-        : _connectionMap(*this)
+    PUSH_WARNING(DISABLE_WARNING_THIS_IN_MEMBER_INITIALIZER_LIST)
+    Communicator::Communicator(const Core::NodeId& node, const string& proxyStubPath, const TCHAR* sourceName)
+        : _source(sourceName == nullptr ? _T("UnknownServer") : sourceName)
+        , _connectionMap(*this)
         , _ipcServer(node, _connectionMap, proxyStubPath) {
         if (proxyStubPath.empty() == false) {
             RPC::LoadProxyStubs(proxyStubPath);
@@ -360,10 +383,12 @@ namespace RPC {
     }
 
     Communicator::Communicator(
-        const Core::NodeId& node,
+        const Core::NodeId& node, 
         const string& proxyStubPath,
-        const Core::ProxyType<Core::IIPCServer>& handler)
-        : _connectionMap(*this)
+        const Core::ProxyType<Core::IIPCServer>& handler,
+        const TCHAR* sourceName)
+        : _source(sourceName == nullptr ? _T("UnknownServer") : sourceName)
+        , _connectionMap(*this)
         , _ipcServer(node, _connectionMap, proxyStubPath, handler) {
         if (proxyStubPath.empty() == false) {
             RPC::LoadProxyStubs(proxyStubPath);
@@ -372,6 +397,7 @@ namespace RPC {
         _ipcServer.CreateFactory<AnnounceMessage>(1);
         _ipcServer.CreateFactory<InvokeMessage>(3);
     }
+    POP_WARNING()
 
     /* virtual */ Communicator::~Communicator()
     {
@@ -387,53 +413,50 @@ namespace RPC {
         // Now there are no more connections pending. Remove my pending IMonitorable::ICallback settings.
         g_destructor.WaitForCompletion(_connectionMap);
     }
-
-    void Communicator::Destroy(const uint32_t id)
-    {
+    void Communicator::Destroy(const uint32_t id) {
         // This is a forceull call, blocking, to kill that specific connection
         g_destructor.ForceDestruct(id);
     }
-
-    void Communicator::LoadProxyStubs(const string& pathName)
-    {
+    void Communicator::LoadProxyStubs(const string& pathName) {
         RPC::LoadProxyStubs(pathName);
     }
-
-    const std::vector<string>& Communicator::Process::DynamicLoaderPaths() const
-    {
+    const std::vector<string>& Communicator::Process::DynamicLoaderPaths() const {
         return _LoaderPaths.Paths();
     }
+
+    PUSH_WARNING(DISABLE_WARNING_THIS_IN_MEMBER_INITIALIZER_LIST)
     CommunicatorClient::CommunicatorClient(
         const Core::NodeId& remoteNode)
-        : Core::IPCChannelClientType<Core::Void, false, true>(remoteNode, CommunicationBufferSize)
-        , _announceMessage(Core::ProxyType<RPC::AnnounceMessage>::Create())
+        : BaseClass(remoteNode, CommunicationBufferSize)
+        , _announceMessage()
         , _announceEvent(false, true)
-        , _handler(this)
         , _connectionId(~0)
     {
+        _announceMessage.AddRef();
+
         CreateFactory<RPC::AnnounceMessage>(1);
         CreateFactory<RPC::InvokeMessage>(2);
 
-        Register(RPC::InvokeMessage::Id(), Core::ProxyType<Core::IIPCServer>(Core::ProxyType<InvokeHandlerImplementation>::Create()));
-        Register(RPC::AnnounceMessage::Id(), Core::ProxyType<Core::IIPCServer>(Core::ProxyType<AnnounceHandlerImplementation>::Create(this)));
+        Register(RPC::InvokeMessage::Id(), Core::ProxyType<Core::IIPCServer>(Core::ProxyType<InvokeHandler>::Create()));
+        Register(RPC::AnnounceMessage::Id(), Core::ProxyType<Core::IIPCServer>(Core::ProxyType<AnnounceHandler>::Create(*this)));
     }
-
     CommunicatorClient::CommunicatorClient(
         const Core::NodeId& remoteNode,
         const Core::ProxyType<Core::IIPCServer>& handler)
-        : Core::IPCChannelClientType<Core::Void, false, true>(remoteNode, CommunicationBufferSize)
-        , _announceMessage(Core::ProxyType<RPC::AnnounceMessage>::Create())
+        : BaseClass(remoteNode, CommunicationBufferSize)
+        , _announceMessage()
         , _announceEvent(false, true)
-        , _handler(this)
         , _connectionId(~0)
     {
+        _announceMessage.AddRef();
+
         CreateFactory<RPC::AnnounceMessage>(1);
         CreateFactory<RPC::InvokeMessage>(2);
 
         BaseClass::Register(RPC::InvokeMessage::Id(), handler);
-        BaseClass::Register(RPC::AnnounceMessage::Id(), handler);
+        BaseClass::Register(RPC::AnnounceMessage::Id(), Core::ProxyType<Core::IIPCServer>(Core::ProxyType<AnnounceHandler>::Create(*this)));
     }
-POP_WARNING()
+    POP_WARNING()
 
     CommunicatorClient::~CommunicatorClient()
     {
@@ -444,6 +467,8 @@ POP_WARNING()
 
         DestroyFactory<RPC::InvokeMessage>();
         DestroyFactory<RPC::AnnounceMessage>();
+
+        _announceMessage.CompositRelease();
     }
 
     uint32_t CommunicatorClient::Open(const uint32_t waitTime)
@@ -452,7 +477,7 @@ POP_WARNING()
         _announceEvent.ResetEvent();
 
         //do not set announce parameters, we do not know what side will offer the interface
-        _announceMessage->Parameters().Set(Core::ProcessInfo().Id());
+        _announceMessage.Parameters().Set(Core::ProcessInfo().Id());
 
         uint32_t result = BaseClass::Open(waitTime);
 
@@ -468,7 +493,7 @@ POP_WARNING()
         ASSERT(BaseClass::IsOpen() == false);
         _announceEvent.ResetEvent();
 
-        _announceMessage->Parameters().Set(Core::ProcessInfo().Id(), className, interfaceId, version);
+        _announceMessage.Parameters().Set(Core::ProcessInfo().Id(), className, interfaceId, version);
 
         uint32_t result = BaseClass::Open(waitTime);
 
@@ -486,7 +511,7 @@ POP_WARNING()
 
         Core::instance_id impl = instance_cast<void*>(implementation);
 
-        _announceMessage->Parameters().Set(Core::ProcessInfo().Id(), interfaceId, impl, exchangeId);
+        _announceMessage.Parameters().Set(Core::ProcessInfo().Id(), interfaceId, impl, exchangeId);
 
         uint32_t result = BaseClass::Open(waitTime);
 
@@ -507,12 +532,12 @@ POP_WARNING()
 
         if (BaseClass::Source().IsOpen()) {
             TRACE_L1("Invoking the Announce message to the server. %d", __LINE__);
-            uint32_t result = Invoke<RPC::AnnounceMessage>(_announceMessage, this);
+            uint32_t result = Invoke<RPC::AnnounceMessage>(Core::ProxyType<RPC::AnnounceMessage>(_announceMessage), this);
 
             if (result != Core::ERROR_NONE) {
                 TRACE_L1("Error during invoke of AnnounceMessage: %d", result);
             } else {
-                RPC::Data::Init& setupFrame(_announceMessage->Parameters());
+                RPC::Data::Init& setupFrame(_announceMessage.Parameters());
 
                 if (setupFrame.IsRequested() == true) {
                     Core::ProxyType<Core::IPCChannel> refChannel(*this);
@@ -538,6 +563,8 @@ POP_WARNING()
         if (announceMessage->Response().IsSet() == true) {
             string jsonMessagingCategories(announceMessage->Response().MessagingCategories());
 
+            Assertion::AssertionUnit::Instance();
+
 #if defined(WARNING_REPORTING_ENABLED)
             string jsonDefaultWarningCategories(announceMessage->Response().WarningReportingCategories());
             if(jsonDefaultWarningCategories.empty() == false){
@@ -561,4 +588,12 @@ POP_WARNING()
     constexpr uint32_t RPC::ProcessShutdown::DestructionStackSize;
 
 }
+
+ENUM_CONVERSION_BEGIN(RPC::Environment::scope)
+
+    { RPC::Environment::scope::LOCAL, _TXT("Local") },
+    { RPC::Environment::scope::GLOBAL, _TXT("Global") },
+
+ENUM_CONVERSION_END(RPC::Environment::scope)
+
 }

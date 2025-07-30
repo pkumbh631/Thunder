@@ -32,7 +32,7 @@
 #include "TextFragment.h"
 #include "Time.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
     template <typename THREADLOCALSTORAGE>
     class ThreadLocalStorageType {
@@ -218,17 +218,11 @@ namespace Core {
         int PriorityMin() const;
         int PriorityMax() const;
         bool Priority(int priority);
-        inline ::ThreadId Id() const
+        inline thread_id Id() const
         {
-#if defined(__WINDOWS__) || defined(__APPLE__)
-PUSH_WARNING(DISABLE_WARNING_CONVERSION_TO_GREATERSIZE)
-            return (reinterpret_cast<const ::ThreadId>(m_ThreadId));
-POP_WARNING()
-#else
-            return (static_cast<::ThreadId>(m_ThreadId));
-#endif
+            return (m_ThreadId);
         }
-        static ::ThreadId ThreadId();
+        static thread_id ThreadId();
 
         template <typename STORAGETYPE>
         static STORAGETYPE& GetContext()
@@ -248,6 +242,12 @@ POP_WARNING()
         virtual uint32_t Worker() = 0;
         void Terminate();
         bool State(thread_state enumState);
+#ifdef __POSIX__
+        inline string ThreadName() const
+        {
+            return m_threadName;
+        }
+#endif
         void ThreadName(const char* threadName);
 
         inline void SignalTermination()
@@ -280,16 +280,19 @@ POP_WARNING()
 #ifdef __POSIX__
         Event m_sigExit;
         pthread_t m_hThreadInstance;
-        uint32_t m_ThreadId;
 #endif
 
 #ifdef __WINDOWS__
         Event m_sigExit;
         thread_state m_enumSuspendedState;
         HANDLE m_hThreadInstance;
-        DWORD m_ThreadId;
 #endif
+
+        thread_id m_ThreadId;
         static uint32_t _defaultStackSize;
+#ifdef __POSIX__
+        string m_threadName;
+#endif
 
 #ifdef __CORE_EXCEPTION_CATCHING__
         static IExceptionCallback* _exceptionHandler;

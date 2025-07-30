@@ -23,7 +23,7 @@
 #include "ResourceMonitor.h"
 #include "Number.h"
 
-namespace WPEFramework {
+namespace Thunder {
 
 namespace Core {
 
@@ -51,14 +51,14 @@ namespace Core {
             virtual void Dispatch(IDispatch*) = 0;
         };
         struct EXTERNAL Metadata {
-            ::ThreadId                  WorkerId;
+            thread_id                   WorkerId;
             uint32_t                    Runs;
             Core::OptionalType<string>  Job;
         };
 
         #ifdef __CORE_WARNING_REPORTING__
         struct EXTERNAL DispatchedJobMetaData {
-            ::ThreadId WorkerId;
+            thread_id  WorkerId;
             string     CallSign;
             uint64_t   DispatchedTime;
             uint32_t   ReportRunCount;
@@ -109,6 +109,7 @@ namespace Core {
                 }
             }
 
+            MeasurableJob& operator=(MeasurableJob&&) = default;
             MeasurableJob& operator=(const MeasurableJob&) = default;
 
         public:
@@ -206,10 +207,13 @@ namespace Core {
         public:
             JobType(const JobType<IMPLEMENTATION>& copy) = delete;
             JobType<IMPLEMENTATION>& operator=(const JobType<IMPLEMENTATION>& RHS) = delete;
+            // deleting the move operators here is important as the varargs c'tor icw the casting operator allowed it to behave as a move operator
+            JobType(JobType<IMPLEMENTATION>&&) = delete;
+            JobType<IMPLEMENTATION>& operator=(JobType<IMPLEMENTATION>&&) = delete;
 
-PUSH_WARNING(DISABLE_WARNING_THIS_IN_MEMBER_INITIALIZER_LIST)
+            PUSH_WARNING(DISABLE_WARNING_THIS_IN_MEMBER_INITIALIZER_LIST)
             template <typename... Args>
-            JobType(Args&&... args)
+            explicit JobType(Args&&... args)
                 : _implementation(args...)
                 , _state(IDLE)
                 , _job(*this)
@@ -393,14 +397,14 @@ POP_WARNING()
             void Info(Metadata& info) const {
                 info.Runs = _runs;
 
-		        _adminLock.Lock();
+                _adminLock.Lock();
                 if (_currentRequest.IsValid() == false) {
-		            _adminLock.Unlock();
+                    _adminLock.Unlock();
                     info.Job.Clear();
                 }
                 else {
                     info.Job = _currentRequest->Identifier();
-		            _adminLock.Unlock();
+                    _adminLock.Unlock();
                 }
             }
             uint32_t Completed (const ProxyType<IDispatch>& job, const uint32_t waitTime) {
@@ -433,7 +437,7 @@ POP_WARNING()
                     #ifdef __CORE_WARNING_REPORTING__
                     // Add an entry into the JobMonitor list
                     DispatchedJobMetaData data{Thread::ThreadId(),
-                        string(WPEFramework::Core::CallsignTLS::CallsignAccess<&WPEFramework::Core::System::MODULE_NAME>::Callsign()),
+                        string(Thunder::Core::CallsignTLS::CallsignAccess<&Thunder::Core::System::MODULE_NAME>::Callsign()),
                         Time::Now().Ticks(), 0};
 
                     _parent.SaveDispatchedJobContext(data);
@@ -596,7 +600,7 @@ POP_WARNING()
 
             _queue.Unlock();
         }
-        ::ThreadId Id(const uint8_t index) const
+        thread_id Id(const uint8_t index) const
         {
             uint8_t count = 0;
             std::list<Executor>::const_iterator ptr = _units.cbegin();

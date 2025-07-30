@@ -21,19 +21,31 @@
 #include "LoggingCategories.h"
 #include <fstream>
 
-namespace WPEFramework {
+namespace Thunder {
+
 namespace Logging {
 
-    const char* MODULE_LOGGING = _T("SysLog");
+    // -----------------------------------------------------------------
+    // REGISTRATION
+    // -----------------------------------------------------------------
 
-    // Announce upfront all SYSLOG categories...
-    SYSLOG_ANNOUNCE(Crash);
-    SYSLOG_ANNOUNCE(Startup);
-    SYSLOG_ANNOUNCE(Shutdown);
-    SYSLOG_ANNOUNCE(Fatal);
-    SYSLOG_ANNOUNCE(Error);
-    SYSLOG_ANNOUNCE(ParsingError);
-    SYSLOG_ANNOUNCE(Notification);
+    namespace {
+
+        static class Instantiation {
+        public:
+            Instantiation()
+            {
+                SYSLOG_ANNOUNCE(Crash)
+                SYSLOG_ANNOUNCE(Startup)
+                SYSLOG_ANNOUNCE(Shutdown)
+                SYSLOG_ANNOUNCE(Fatal)
+                SYSLOG_ANNOUNCE(Error)
+                SYSLOG_ANNOUNCE(ParsingError)
+                SYSLOG_ANNOUNCE(Notification)
+            }
+        } ControlsRegistration;
+
+    }
 
     static const TCHAR* UnknownCallsign = {_T("NoTLSCallsign") };
 
@@ -58,27 +70,30 @@ namespace Logging {
         const TCHAR* callsign = UnknownCallsign;
 #endif
 
-        SYSLOG_GLOBAL(Logging::Crash, (_T("-== Unhandled exception in: %s [%s] ==-\n"), callsign, exceptionType.c_str()));
+        SYSLOG(Logging::Crash, (_T("-== Unhandled exception in: %s [%s] ==-\n"), callsign, exceptionType.c_str()));
+        
         for (const Core::callstack_info& entry : stack) {
             if (entry.line != static_cast<uint32_t>(~0)) {
-                SYSLOG_GLOBAL(Logging::Crash, (Core::Format(_T("[%03d] [%p] %.30s %s [%d]"), counter, entry.address, entry.module.c_str(), entry.function.c_str(), entry.line)));
+                SYSLOG(Logging::Crash, (Core::Format(_T("[%03d] [%p] %.30s %s [%d]"), counter, entry.address, entry.module.c_str(), entry.function.c_str(), entry.line)));
             }
             else {
-                SYSLOG_GLOBAL(Logging::Crash, (Core::Format(_T("[%03d] [%p] %.30s %s"), counter, entry.address, entry.module.c_str(), entry.function.c_str())));
+                SYSLOG(Logging::Crash, (Core::Format(_T("[%03d] [%p] %.30s %s"), counter, entry.address, entry.module.c_str(), entry.function.c_str())));
             }
             counter++;
         }
     }
 
-    void DumpSystemFiles(const Core::process_t pid)
+    void DumpSystemFiles(const pid_t pid)
     {
         static auto logProcPath = [](const std::string& path) {
             std::ifstream fileStream(path);
+            
             if (fileStream.is_open()) {
-                SYSLOG_GLOBAL(Logging::Crash, (_T("-== %s ==-\n"), path.c_str()));
+                SYSLOG(Logging::Crash, (_T("-== %s ==-\n"), path.c_str()));
                 std::string line;
+                
                 while (std::getline(fileStream, line)) {
-                    SYSLOG_GLOBAL(Logging::Crash, (line));
+                    SYSLOG(Logging::Crash, (line));
                 }
             }
         };
@@ -118,5 +133,3 @@ namespace Logging {
 
 } // namespace Logging
 }
-
-

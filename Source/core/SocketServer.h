@@ -25,12 +25,12 @@
 #include "Proxy.h"
 #include "SocketPort.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
     template <typename CLIENT>
     class SocketServerType {
     private:
-        typedef std::map<uint32_t, Core::ProxyType<CLIENT>> ClientMap;
+        using ClientMap = std::map<uint32_t, Core::ProxyType<CLIENT>>;
 
     public:
         template <typename HANDLECLIENT>
@@ -62,9 +62,14 @@ namespace Core {
                 , _iterator(_clients.begin())
             {
             }
-            ~IteratorType()
+            IteratorType(IteratorType<HANDLECLIENT>&& move)
+                : _atHead(move._atHead)
+                , _clients(std::move(move._clients))
+                , _iterator(std::move(move._iterator))
             {
+                move._atHead = true;
             }
+            ~IteratorType() = default;
 
             IteratorType& operator=(const IteratorType<HANDLECLIENT>& RHS)
             {
@@ -72,6 +77,16 @@ namespace Core {
                 _atHead = RHS._atHead;
                 _clients = RHS._clients;
                 _iterator = RHS._iterator;
+            }
+            IteratorType& operator=(IteratorType<HANDLECLIENT>&& move)
+            {
+                if (this != &move) {
+                    _atHead = move._atHead;
+                    _clients = std::move(move._clients);
+                    _iterator = std::move(move._iterator);
+
+                    move._atHead = true;
+                }
             }
 
         public:
@@ -97,7 +112,7 @@ namespace Core {
             }
             inline uint32_t Count() const
             {
-                return (_clients->size());
+                return (static_cast<uint32_t>(_clients.size()));
             }
             HANDLECLIENT Client()
             {
@@ -113,38 +128,35 @@ namespace Core {
             typename std::list<HANDLECLIENT>::iterator _iterator;
         };
 
-        typedef IteratorType<ProxyType<CLIENT>> Iterator;
+        using Iterator = IteratorType<ProxyType<CLIENT>>;
 
     private:
         template <typename HANDLECLIENT>
         class SocketHandler : public SocketListner {
-        private:
+        public:
             SocketHandler() = delete;
+            SocketHandler(SocketHandler<HANDLECLIENT>&&) = delete;
             SocketHandler(const SocketHandler<HANDLECLIENT>&) = delete;
+            SocketHandler<HANDLECLIENT>& operator=(SocketHandler<HANDLECLIENT>&&) = delete;
             SocketHandler<HANDLECLIENT>& operator=(const SocketHandler<HANDLECLIENT>&) = delete;
 
-        public:
-            SocketHandler(SocketServerType<CLIENT>* parent)
+            SocketHandler(SocketServerType<CLIENT>& parent)
                 : SocketListner()
                 , _nextClient(1)
                 , _lock()
                 , _clients()
-                , _parent(*parent)
+                , _parent(parent)
             {
-
-                ASSERT(parent != nullptr);
             }
-            SocketHandler(const NodeId& listenNode, SocketServerType<CLIENT>* parent)
+            SocketHandler(const NodeId& listenNode, SocketServerType<CLIENT>& parent)
                 : SocketListner(listenNode)
                 , _nextClient(1)
                 , _lock()
                 , _clients()
-                , _parent(*parent)
+                , _parent(parent)
             {
-
-                ASSERT(parent != nullptr);
             }
-            ~SocketHandler()
+            ~SocketHandler() override
             {
                 SocketListner::Close(Core::infinite);
                 CloseClients(0);
@@ -225,19 +237,6 @@ namespace Core {
 
                 return (result);
             }
-            inline void Suspend(const uint32_t ID)
-            {
-                _lock.Lock();
-
-                typename ClientMap::iterator index = _clients.find(ID);
-
-                if (index != _clients.end()) {
-                    // Oke connection still exists, send the message..
-                    index->second->Close(0);
-                }
-
-                _lock.Unlock();
-            }
             inline void CloseClients(const uint32_t waiTime)
             {
                 _lock.Lock();
@@ -260,7 +259,18 @@ namespace Core {
                 typename ClientMap::iterator index = _clients.begin();
 
                 while (index != _clients.end()) {
-                    if ((index->second->IsClosed() == true) || ((index->second->IsSuspended() == true) && (index->second->Close(100) == Core::ERROR_NONE))) {
+                    // Do not change the Close() duration to a value >0. We should just test, but not wait for a statechange.
+                    // Waiting for a Statwchange might require, in the SocketPort imlementation of Close, WaitForCloseure with
+                    // parameter Core::infinite in case we have a faulthy socket. This call will than only return if the 
+                    // ResourceMonitor thread does report on Closure of the socket. However, the ResourceMonitor thread might
+                    // also be calling into here for an Accept. 
+                    // In that case, the Accept will block on the _lock from this object as it is taken by this Cleanup call
+                    // running on a different thread but also this lock will not be freed as this cleanup thread is waiting 
+                    // now on the WaitForClosure that needs attention from the ResourceMonitor thread, which is currently 
+                    // blocked by the Accpet, waiting for this lock ;-)
+                    // By setting the Close wait time to 0, it wil never require the ReourceMonitor thread to participate 
+                    // in the evaluatio of this socket state and thus in due time, the Server lock is *always* released.
+                    if ((index->second->IsClosed() == true) || ((index->second->IsSuspended() == true) && (index->second->Close(0) == Core::ERROR_NONE))) {
                         // Step forward but remember where we were and delete that one....
                         index = _clients.erase(index);
                     }
@@ -271,7 +281,7 @@ namespace Core {
 
                 _lock.Unlock();
             }
-            virtual void Accept(SOCKET& newClient, const NodeId& remoteId)
+            void Accept(SOCKET& newClient, const NodeId& remoteId) override
             {
                 ProxyType<HANDLECLIENT> client = ProxyType<HANDLECLIENT>::Create(newClient, remoteId, &_parent);
 
@@ -303,10 +313,10 @@ namespace Core {
                     _lock.Unlock();
                 }
             }
-			void Lock() 
-			{
+            void Lock()
+            {
                 _lock.Lock();
-			}
+            }
             void Unlock()
             {
                 _lock.Unlock();
@@ -338,23 +348,23 @@ namespace Core {
             SocketServerType<CLIENT>& _parent;
         };
 
+    public:
+        SocketServerType(SocketServerType<CLIENT>&&) = delete;
         SocketServerType(const SocketServerType<CLIENT>&) = delete;
+        SocketServerType<CLIENT>& operator=(SocketServerType<CLIENT>&&) = delete;
         SocketServerType<CLIENT>& operator=(const SocketServerType<CLIENT>&) = delete;
 
-    public:
-PUSH_WARNING(DISABLE_WARNING_THIS_IN_MEMBER_INITIALIZER_LIST)
+        PUSH_WARNING(DISABLE_WARNING_THIS_IN_MEMBER_INITIALIZER_LIST)
         SocketServerType()
-            : _handler(this)
+            : _handler(*this)
         {
         }
         SocketServerType(const NodeId& listeningNode)
-            : _handler(listeningNode, this)
+            : _handler(listeningNode, *this)
         {
         }
-POP_WARNING()
-        ~SocketServerType()
-        {
-        }
+        POP_WARNING()
+        ~SocketServerType() = default;
 
     public:
         inline uint32_t Open(const uint32_t waitTime)

@@ -25,11 +25,19 @@
 #include "Thread.h"
 #include "FileSystem.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
 
-#ifdef __LINUX__
+#if defined(__APPLE__) || defined(__LINUX__)
+#ifdef __APPLE__
+#include <errno.h> // for errno
+#include <fcntl.h> // for O_RDONLY
+#include <string.h> // for strerror()
+#include <sys/event.h> // for kqueue() etc.
+#include <unistd.h> // for close()
+#else
 #include <sys/inotify.h>
+#endif
 
 class FileSystemMonitor : public Core::IResource {
 public:
@@ -58,8 +66,12 @@ private:
         }
         void Register(ICallback *callback)
         {
-            ASSERT(std::find(_callbacks.begin(),_callbacks.end(), callback) == _callbacks.end());
-            _callbacks.emplace_back(callback);
+            std::list<ICallback *>::iterator index = std::find(_callbacks.begin(),_callbacks.end(), callback);
+            ASSERT(index == _callbacks.end());
+
+            if (index == _callbacks.end()) {
+                _callbacks.emplace_back(callback);
+            }
         }
         void Unregister(ICallback *callback)
         {
@@ -87,8 +99,12 @@ private:
 
     FileSystemMonitor()
         : _adminLock()
+#ifdef __APPLE__
+        , _notifyFd(kqueue())
+#else
         , _notifyFd(inotify_init1(IN_NONBLOCK|IN_CLOEXEC))
         , _files()
+#endif
         , _observers()
     {
     }
@@ -128,10 +144,46 @@ public:
             Observers::iterator loop = _observers.find(index->second);
             ASSERT(loop != _observers.end());
 
-            loop->second.Register(callback);
+            if (loop != _observers.end()) {
+                loop->second.Register(callback);
+            }
         }
         else
         {
+#ifdef __APPLE__
+            // The vnode monitor requires a file descriptor, so
+            // open the directory to get one.
+            int fileFd = open(filename.c_str(), O_EVTONLY);
+            if (fileFd > 0)
+            {
+                // Fill out the event structure. Store the name of the
+                // directory in the user data
+                struct kevent direvent;
+                EV_SET(&direvent,
+                    fileFd,                         // identifier
+                    EVFILT_VNODE,                  // filter
+                    EV_ADD | EV_CLEAR | EV_ENABLE, // action flags
+                    NOTE_DELETE |  NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_LINK | NOTE_RENAME | NOTE_REVOKE, // filter flags
+                    0,                             // filter data
+                    (void *)filename.c_str());              // user data
+
+                // register the event
+                if (kevent(_notifyFd, &direvent, 1, NULL, 0, NULL) != -1)
+                {
+                     _files.emplace(std::piecewise_construct,
+                    std::forward_as_tuple(path),
+                    std::forward_as_tuple(fileFd));
+                     _observers.emplace(std::piecewise_construct,
+                    std::forward_as_tuple(fileFd),
+                    std::forward_as_tuple(callback));
+
+                    if (_files.size() == 1) {
+                        // This is the first entry, lets start monitoring
+                        Core::ResourceMonitor::Instance().Register(*this);
+                    }
+                }
+            }
+#else
             const uint32_t mask = Core::File(path).IsDirectory()? (IN_CREATE | IN_CLOSE_WRITE | IN_DELETE | IN_MOVE | IN_DELETE_SELF)
                                             : (IN_MODIFY | IN_CLOSE_WRITE | IN_DELETE_SELF | IN_MOVE_SELF);
 
@@ -149,6 +201,7 @@ public:
                     Core::ResourceMonitor::Instance().Register(*this);
                 }
             }
+#endif
         }
 
         _adminLock.Unlock();
@@ -171,25 +224,31 @@ public:
             Observers::iterator loop = _observers.find(index->second);
             ASSERT(loop != _observers.end());
 
-            loop->second.Unregister(callback);
-            if (loop->second.HasCallbacks() == false) {
-                if (inotify_rm_watch(_notifyFd, index->second) < 0) {
-                    TRACE_L1(_T("Invoke of inotify_rm_watch failed"));
-                }
-                // Clear this index, we are no longer observing
-                _files.erase(index);
-                _observers.erase(loop);
-                if (_files.size() == 0) {
-                    // This is the first entry, lets start monitoring
-                    _adminLock.Unlock();
-                    Core::ResourceMonitor::Instance().Unregister(*this);
+            if (loop != _observers.end()) {
+                loop->second.Unregister(callback);
+                if (loop->second.HasCallbacks() == false) {
+#ifdef __APPLE__
+                    ::close(index->second); //Stop monitoring this filepath
+#else
+                    if (inotify_rm_watch(_notifyFd, index->second) < 0) {
+                        TRACE_L1(_T("Invoke of inotify_rm_watch failed"));
+                    }
+#endif
+                    // Clear this index, we are no longer observing
+                    _files.erase(index);
+                    _observers.erase(loop);
+                    if (_files.size() == 0) {
+                        // This is the first entry, lets start monitoring
+                        _adminLock.Unlock();
+                        Core::ResourceMonitor::Instance().Unregister(*this);
+                    }
+                    else {
+                         _adminLock.Unlock();
+                    }
                 }
                 else {
                     _adminLock.Unlock();
                 }
-            }
-            else {
-                _adminLock.Unlock();
             }
         }
         else
@@ -208,14 +267,36 @@ private:
     {
         return (POLLIN);
     }
+#if __APPLE__
+    void Handle(const uint16_t events) override
+    {
+        if ((events & POLLIN) != 0) {
+            struct kevent event;
+            if(kevent(_notifyFd, NULL, 0, &event, 1, NULL) > 0) {
+                if (event.flags & EV_ERROR)
+                    TRACE_L1(_T("Event error:	%s"), strerror(event.data));
+                else {
+                    TRACE_L1(_T("Something was written in	'%s'\n"), static_cast<char *>(event.udata));
+                        // Check if we have this entry..
+                    _adminLock.Lock();
+                    Observers::iterator loop = _observers.find(static_cast<int>(event.ident));
+                    if (loop != _observers.end()) {
+                        loop->second.Notify();
+                    }
+                    _adminLock.Unlock();
+                }
+            }
+        }
+    }
+#else
     void Handle(const uint16_t events) override
     {
         if ((events & POLLIN) != 0) {
             uint8_t eventBuffer[(sizeof(struct inotify_event) + NAME_MAX + 1)];
             int length;
-            do
-            {
+            do {
                 length = ::read(_notifyFd, eventBuffer, sizeof(eventBuffer));
+                eventBuffer[sizeof(eventBuffer)-1] = '\0';
 
                 if (length >= static_cast<int>(sizeof(struct inotify_event))) {
                     const struct inotify_event *event = reinterpret_cast<const struct inotify_event *>(eventBuffer);
@@ -250,6 +331,7 @@ private:
             } while (length > 0);
         }
     }
+#endif
 
 private:
     Core::CriticalSection _adminLock;
@@ -284,8 +366,10 @@ private:
         using ClientList = std::list<ICallback*>;
     public:
         Context() = delete;
+        Context(Context&&) = delete;
         Context(const Context&) = delete;
-        Context& operator= (const Context&) = delete;
+        Context& operator=(Context&&) = delete;
+        Context& operator=(const Context&) = delete;
 
         Context(const string& pathName)
             : _adminLock()
@@ -330,11 +414,18 @@ private:
         // 4) IsEmpty
         // 5) Notify
         void Register(ICallback* client) {
-            ASSERT(std::find(_clients.begin(), _clients.end(), client) == _clients.end());
+            ASSERT(client != nullptr);
 
-            _clients.push_back(client);
+            ClientList::iterator index (std::find(_clients.begin(), _clients.end(), client));
+            ASSERT(index == _clients.end());
+
+            if (index == _clients.end()) {
+                _clients.push_back(client);
+            }
         }
         void Unregister(ICallback* client) {
+            ASSERT(client != nullptr);
+
             ClientList::iterator index (std::find(_clients.begin(), _clients.end(), client));
 
             ASSERT (index != _clients.end());
@@ -383,8 +474,10 @@ private:
     class Dispatcher : public Core::Thread {
     public:
         Dispatcher() = delete;
+        Dispatcher(Dispatcher&&) = delete;
         Dispatcher(const Dispatcher&) = delete;
-        Dispatcher& operator= (const Dispatcher&) = delete;
+        Dispatcher& operator=(Dispatcher&&) = delete;
+        Dispatcher& operator=(const Dispatcher&) = delete;
         Dispatcher(FileSystemMonitor& parent)
             : _parent(parent) {
         }
@@ -459,7 +552,9 @@ public:
 
             ASSERT(index != _observers.end());
 
-            index->second.Register(callback);
+            if (index != _observers.end()) {
+                index->second.Register(callback);
+            }
             subscribed = true;
         }
         _adminLock.Unlock();
@@ -530,4 +625,4 @@ private:
 #endif
 
 } // namespace Core
-} // namespace WPEFramework
+} // namespace Thunder

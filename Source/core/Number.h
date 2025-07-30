@@ -25,7 +25,7 @@
 #include "TextFragment.h"
 #include "TypeTraits.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
     extern "C" {
     EXTERNAL unsigned char FromDigits(const TCHAR element);
@@ -70,6 +70,11 @@ namespace Core {
             : m_Value(rhs.m_Value)
         {
         }
+        NumberType(
+            NumberType<TYPE, SIGNED, BASETYPE>&& move)
+            : m_Value(std::move(move.m_Value))
+        {
+        }
         ~NumberType()
         {
         }
@@ -79,6 +84,15 @@ namespace Core {
             const NumberType<TYPE, SIGNED, BASETYPE>& Value)
         {
             return (NumberType<TYPE, SIGNED, BASETYPE>::operator=(Value.m_Value));
+        }
+        inline NumberType<TYPE, SIGNED, BASETYPE>&
+        operator=(
+            NumberType<TYPE, SIGNED, BASETYPE>&& move)
+        {
+            if (this != &move) {
+                m_Value = std::move(move.m_Value);
+            }
+            return *this;
         }
         inline NumberType<TYPE, SIGNED, BASETYPE>&
         operator=(const TYPE Value)
@@ -848,9 +862,11 @@ namespace Core {
         Fractional();
         Fractional(const int32_t& integer, const uint32_t& remainder = 0);
         Fractional(const Fractional& copy);
+        Fractional(Fractional&& move);
         virtual ~Fractional();
 
         Fractional& operator=(const Fractional& RHS);
+        Fractional& operator=(Fractional&& move);
 
     public:
         template <typename FLOATINGPOINTTYPE>
@@ -1014,8 +1030,7 @@ namespace Core {
     public:
         using BASE = BitArrayBaseType<MAXBITS,BitArrayFlexType<MAXBITS>>;
         using T = typename BASE::T;
-
-        BitArrayFlexType(uint8_t size = 0, T initial = 0)
+        BitArrayFlexType(uint8_t size = 0, VARIABLE_IS_NOT_USED T initial = 0)
         {
             Reset(size);
         }

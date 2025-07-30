@@ -28,7 +28,7 @@
 #include "SocketPort.h"
 #include "TypeTraits.h"
 
-namespace WPEFramework {
+namespace Thunder {
 
 namespace Core {
 
@@ -198,31 +198,35 @@ namespace Core {
                         }
                     }
 
-                    ASSERT((_offset - 8) <= _length);
+                    if (_offset >= 8) {
 
-                    if ((_offset - 8) < _length) {
+                        ASSERT((_offset - 8) <= _length);
 
-                        // There could be multiple packages in this frame, do not read/handle more than what fits in the frame.
-                        uint16_t handled((maxLength - result) > static_cast<uint16_t>(_length - (_offset - 8)) ? static_cast<uint16_t>(_length - (_offset - 8)) : (maxLength - result));
+                        if ((_offset - 8) < _length) {
 
-                        if (_current != nullptr) {
-                            handled = _current->Deserialize(&stream[result], handled, _offset - 8);
+                            // There could be multiple packages in this frame, do not read/handle more than what fits in the frame.
+                            uint32_t tmp = _length - (_offset - 8);
+                            uint16_t handled(static_cast<uint32_t>(maxLength - result) > tmp ? static_cast<uint16_t>(tmp) : (maxLength - result));
+
+                            if (_current != nullptr) {
+                                handled = _current->Deserialize(&stream[result], handled, _offset - 8);
+                            }
+
+                            _offset += handled;
+                            result += handled;
                         }
 
-                        _offset += handled;
-                        result += handled;
-                    }
+                        ASSERT((_offset - 8) <= _length);
 
-                    ASSERT((_offset - 8) <= _length);
-
-                    if ((_offset - 8) == _length) {
-                        if (_current != nullptr) {
-                            IMessage* ready = _current;
-                            _current = nullptr;
-                            Deserialized(*ready);
+                        if ((_offset - 8) == _length) {
+                            if (_current != nullptr) {
+                                IMessage* ready = _current;
+                                _current = nullptr;
+                                Deserialized(*ready);
+                            }
+                            _offset = 0;
+                            _length = 0;
                         }
-                        _offset = 0;
-                        _length = 0;
                     }
                 }
                 return (result);
@@ -285,8 +289,8 @@ namespace Core {
             ~RawSerializedType() override = default;
 
         public:
-            void AddRef() const override {
-                _parent.AddRef();
+            uint32_t AddRef() const override {
+                return (_parent.AddRef());
             }
             uint32_t Release() const override {
                 return(_parent.Release());
@@ -338,7 +342,7 @@ namespace Core {
             // -----------------------------------------------------
             // Search for custom handling, Compile time !!!
             // -----------------------------------------------------
-            IS_MEMBER_AVAILABLE(Length, hasLength);
+            IS_MEMBER_AVAILABLE_CONVERTIBLE(Length, hasLength);
 
             template <typename SUBJECT=PACKAGE>
             typename Core::TypeTraits::enable_if<hasLength<const SUBJECT, uint32_t>::value, uint32_t>::type
@@ -445,15 +449,15 @@ POP_WARNING()
         {
             return (_response.Package());
         }
-        virtual uint32_t Label() const
+        uint32_t Label() const override
         {
             return (IDENTIFIER);
         }
-        virtual ProxyType<IMessage> IParameters()
+        ProxyType<IMessage> IParameters() override
         {
             return (ProxyType<IMessage>(_parameters, _parameters));
         }
-        virtual ProxyType<IMessage> IResponse()
+        ProxyType<IMessage> IResponse() override
         {
             return (ProxyType<IMessage>(_response, _response));
         }
@@ -521,11 +525,14 @@ POP_WARNING()
             {
                 _lock.Lock();
 
-				ASSERT(handler.IsValid() == true);
-                ASSERT(_handlers.find(id) == _handlers.end());
+                ASSERT(handler.IsValid() == true);
+                std::map<uint32_t, ProxyType<IIPCServer>>::iterator index(_handlers.find(id));
 
-                _handlers.insert(std::pair<uint32_t, ProxyType<IIPCServer>>(id, handler));
+                ASSERT(index == _handlers.end());
 
+                if (index == _handlers.end()) {
+                    _handlers.insert(std::pair<uint32_t, ProxyType<IIPCServer>>(id, handler));
+                }
                 _lock.Unlock();
             }
 
@@ -725,22 +732,20 @@ POP_WARNING()
             _administration.AbortOutbound();
         }
         template <typename ACTUALELEMENT>
-        uint32_t Invoke(ProxyType<ACTUALELEMENT>& command, IDispatchType<IIPC>* completed)
+        uint32_t Invoke(const ProxyType<ACTUALELEMENT>& command, IDispatchType<IIPC>* completed)
         {
-            Core::ProxyType<IIPC> base(command);
-            return (Execute(base, completed));
+            return (Execute(Core::ProxyType<IIPC>(command), completed));
         }
         template <typename ACTUALELEMENT>
-        uint32_t Invoke(ProxyType<ACTUALELEMENT>& command, const uint32_t waitTime)
+        uint32_t Invoke(const ProxyType<ACTUALELEMENT>& command, const uint32_t waitTime)
         {
-            Core::ProxyType<IIPC> base(command);
-            return (Execute(base, waitTime));
+            return (Execute(Core::ProxyType<IIPC>(command), waitTime));
         }
-        uint32_t Invoke(ProxyType<Core::IIPC>& command, IDispatchType<IIPC>* completed)
+        uint32_t Invoke(const ProxyType<Core::IIPC>& command, IDispatchType<IIPC>* completed)
         {
             return (Execute(command, completed));
         }
-        uint32_t Invoke(ProxyType<Core::IIPC>& command, const uint32_t waitTime)
+        uint32_t Invoke(const ProxyType<Core::IIPC>& command, const uint32_t waitTime)
         {
             return (Execute(command, waitTime));
         }
@@ -754,11 +759,13 @@ POP_WARNING()
             _customData = data;
         }
 
+        virtual uint32_t Id() const = 0;
+        virtual string Origin() const = 0;
         virtual uint32_t ReportResponse(Core::ProxyType<IIPC>& inbound) = 0;
 
     private:
-        virtual uint32_t Execute(ProxyType<IIPC>& command, IDispatchType<IIPC>* completed) = 0;
-        virtual uint32_t Execute(ProxyType<IIPC>& command, const uint32_t waitTime) = 0;
+        virtual uint32_t Execute(const ProxyType<IIPC>& command, IDispatchType<IIPC>* completed) = 0;
+        virtual uint32_t Execute(const ProxyType<IIPC>& command, const uint32_t waitTime) = 0;
 
     protected:
         IPCFactory _administration;
@@ -914,6 +921,13 @@ POP_WARNING()
         {
             return (_administration.InProgress());
         }
+        uint32_t Id() const override {
+            return (__Id());
+        }
+        string Origin() const override {
+            return (__Origin());
+        }
+
         uint32_t ReportResponse(Core::ProxyType<IIPC>& inbound) override
         {
             // We got the event, start the invoke, wait for the event to be set again..
@@ -926,6 +940,7 @@ POP_WARNING()
             __StateChange();
         }
 
+
     private:
         IS_MEMBER_AVAILABLE(StateChange, hasStateChange);
 
@@ -936,14 +951,46 @@ POP_WARNING()
             _extension.StateChange();
         }
 
-
         template <typename T=EXTENSION>
         typename Core::TypeTraits::enable_if<!hasStateChange<T, void> ::value, void>::type
         __StateChange()
         {
         }
 
-        uint32_t Execute(ProxyType<IIPC>& command, IDispatchType<IIPC>* completed) override
+        IS_MEMBER_AVAILABLE(Id, hasId);
+
+        template <typename T = EXTENSION>
+        typename Core::TypeTraits::enable_if<hasId<const T, uint32_t> ::value, uint32_t>::type
+            __Id() const
+        {
+            return (_extension.Id());
+        }
+
+        template <typename T = EXTENSION>
+        typename Core::TypeTraits::enable_if<!hasId<const T, uint32_t> ::value, uint32_t>::type
+            __Id() const
+        {
+            return (0);
+        }
+
+        IS_MEMBER_AVAILABLE(Origin, hasOrigin);
+
+        template <typename T = EXTENSION>
+        typename Core::TypeTraits::enable_if<hasOrigin<const T, string> ::value, string>::type
+            __Origin() const
+        {
+            return (_extension.Origin());
+        }
+
+        template <typename T = EXTENSION>
+        typename Core::TypeTraits::enable_if<!hasOrigin<const T, string> ::value, string>::type
+            __Origin() const
+        {
+            static string unknown(_T("Unknown"));
+            return (unknown);
+        }
+
+        uint32_t Execute(const ProxyType<IIPC>& command, IDispatchType<IIPC>* completed) override
         {
             uint32_t success = Core::ERROR_UNAVAILABLE;
 
@@ -966,7 +1013,7 @@ POP_WARNING()
 
             return (success);
         }
-        uint32_t Execute(ProxyType<IIPC>& command, const uint32_t waitTime) override
+        uint32_t Execute(const ProxyType<IIPC>& command, const uint32_t waitTime) override
         {
             uint32_t success = Core::ERROR_CONNECTION_CLOSED;
 

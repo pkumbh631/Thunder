@@ -22,7 +22,7 @@
 #include "Module.h"
 #include <iostream>
 
-namespace WPEFramework {
+namespace Thunder {
 namespace WarningReporting {
 
     class EXTERNAL TooLongWaitingForLock {
@@ -46,7 +46,7 @@ namespace WarningReporting {
         void ToString(string& visitor, const int64_t actualValue, const int64_t maxValue) const
         {
             visitor = (_T("It took suspiciously long to acquire a critical section"));
-            visitor += Core::Format(_T(", value %lld [ms], max allowed %lld [ms]"), actualValue, maxValue);
+            visitor += Core::Format(_T(", value %" PRId64 " [ms], max allowed %" PRId64 " [ms]"), actualValue, maxValue);
         };
 
         static constexpr uint32_t DefaultWarningBound = { 1000 };
@@ -74,7 +74,7 @@ namespace WarningReporting {
         void ToString(string& visitor, const int64_t actualValue, const int64_t maxValue) const
         {
             visitor = (_T("A sink still holds a reference when it is being destructed"));
-            visitor += Core::Format(_T(", value %lld, max allowed %lld"), actualValue, maxValue);
+            visitor += Core::Format(_T(", value %" PRId64 ", max allowed %" PRId64), actualValue, maxValue);
         };
 
         static constexpr uint32_t DefaultWarningBound = { 0 };
@@ -130,7 +130,7 @@ namespace WarningReporting {
         {
             visitor = _T("RPC call of method ");
             visitor += Core::Format(_T("[%d] on interface [%d] took to long"), _methodId, _interfaceId);
-            visitor += Core::Format(_T(", value %lld [ms], max allowed %lld [ms]"), actualValue, maxValue);
+            visitor += Core::Format(_T(", value %" PRId64 " [ms], max allowed %" PRId64 " [ms]"), actualValue, maxValue);
         };
 
         static constexpr uint32_t DefaultWarningBound = { 750 };
@@ -162,7 +162,7 @@ namespace WarningReporting {
         void ToString(string& visitor, const int64_t actualValue, const int64_t maxValue) const
         {
             visitor = (_T("Job took too long to finish"));
-            visitor += Core::Format(_T(", value %lld [ms], max allowed %lld [ms]"), actualValue, maxValue);
+            visitor += Core::Format(_T(", value %" PRId64 " [ms], max allowed %" PRId64 " [ms]"), actualValue, maxValue);
         };
 
         static constexpr uint32_t DefaultWarningBound = { 7500 };
@@ -190,7 +190,7 @@ namespace WarningReporting {
         void ToString(string& visitor, const int64_t actualValue, const int64_t maxValue) const
         {
             visitor = (_T("Job waiting in queue to be executed took too long"));
-            visitor += Core::Format(_T(", value %lld [ms], max allowed %lld [ms]"), actualValue, maxValue);
+            visitor += Core::Format(_T(", value %" PRId64 " [ms], max allowed %" PRId64 " [ms]"), actualValue, maxValue);
         };
 
         static constexpr uint32_t DefaultWarningBound = { 400 };
@@ -218,7 +218,7 @@ namespace WarningReporting {
         void ToString(string& visitor, const int64_t actualValue, const int64_t maxValue) const
         {
             visitor = (_T("Decrypt call took too long"));
-            visitor += Core::Format(_T(", value %lld [ms], max allowed %lld [ms]"), actualValue, maxValue);
+            visitor += Core::Format(_T(", value %" PRId64 " [ms], max allowed %" PRId64 " [ms]"), actualValue, maxValue);
 
         };
 
@@ -247,12 +247,40 @@ namespace WarningReporting {
         void ToString(string& visitor, const int64_t actualValue, const int64_t maxValue) const
         {
             visitor = (_T("Job is taking too long to complete the execution, a potentail deadlock issue.."));
-            visitor += Core::Format(_T(", value %lld [ms], max allowed %lld [ms]"), actualValue, maxValue);
+            visitor += Core::Format(_T(", value %" PRId64 " [ms], max allowed %" PRId64 " [ms]"), actualValue, maxValue);
         };
 
         static constexpr uint32_t DefaultWarningBound = { 20000 };
         static constexpr uint32_t DefaultReportBound = { 15000 };
     };
+
+    class EXTERNAL SocketOperationTooLong {
+        public:
+            SocketOperationTooLong(const SocketOperationTooLong&) = delete;
+            SocketOperationTooLong& operator=(const SocketOperationTooLong&) = delete;
+            SocketOperationTooLong() = default;
+            ~SocketOperationTooLong() = default;
+
+            // Nothing to serialize/deserialize here
+            uint16_t Serialize(uint8_t[], const uint16_t) const
+            {
+                return 0;
+            }
+
+            uint16_t Deserialize(const uint8_t[], const uint16_t)
+            {
+                return 0;
+            }
+
+            void ToString(string& visitor, const int64_t actualValue, const int64_t maxValue) const
+            {
+                visitor = (_T("Socket operation took too long"));
+                visitor += Core::Format(_T(", value %" PRId64 " [ms], max allowed %" PRId64 " [ms]"), actualValue, maxValue);
+            };
+
+            static constexpr uint32_t DefaultWarningBound = { 1000 };
+            static constexpr uint32_t DefaultReportBound = { 1000 };
+        };
 
 }
 }

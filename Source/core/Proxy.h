@@ -38,15 +38,21 @@
 
 // ---- Class Definition ----
 
-namespace WPEFramework {
+namespace Thunder {
     namespace Core {
 
         template<typename CONTEXT>
         class ProxyType;
 
-PUSH_WARNING(DISABLE_WARNING_MULTPILE_INHERITENCE_OF_BASE_CLASS)
+        template <typename ELEMENT>
+        class SingletonProxyType;
+
+        PUSH_WARNING(DISABLE_WARNING_MULTPILE_INHERITENCE_OF_BASE_CLASS)
         template <typename CONTEXT>
         class ProxyObject final : public CONTEXT, public std::conditional<std::is_base_of<IReferenceCounted, CONTEXT>::value, Void, IReferenceCounted>::type {
+
+        friend class ProxyType<CONTEXT>;
+
         public:
             // ----------------------------------------------------------------
             // Never, ever allow reference counted objects to be assigned.
@@ -94,7 +100,9 @@ PUSH_WARNING(DISABLE_WARNING_MULTPILE_INHERITENCE_OF_BASE_CLASS)
                     void* stAllocateBlock)
             {
                 reinterpret_cast<ProxyObject<CONTEXT>*>(stAllocateBlock)->__Destructed();
+PUSH_WARNING(DISABLE_WARNING_FREE_NONHEAP_OBJECT)
                 ::free(stAllocateBlock);
+POP_WARNING()
             }
 
         public:
@@ -119,12 +127,14 @@ PUSH_WARNING(DISABLE_WARNING_MULTPILE_INHERITENCE_OF_BASE_CLASS)
             }
 
         public:
-            void AddRef() const override
+            uint32_t AddRef() const override
             {
                 if (_refCount == 1) {
                     const_cast<ProxyObject<CONTEXT>*>(this)->__Acquire();
                 }
                 _refCount++;
+
+                return (Core::ERROR_NONE);
             }
             uint32_t Release() const override
             {
@@ -174,10 +184,12 @@ PUSH_WARNING(DISABLE_WARNING_MULTPILE_INHERITENCE_OF_BASE_CLASS)
                 const void* result = Alignment(alignof(TYPE), data);
                 return (reinterpret_cast<const TYPE*>(result));
             }
+PUSH_WARNING(DISABLE_WARNING_INCONSISTENT_MISSING_OVERRIDE)
             inline void Clear()
             {
                 __Clear();
             }
+POP_WARNING()
             inline bool IsInitialized() const
             {
                 return (__IsInitialized());
@@ -402,6 +414,7 @@ POP_WARNING()
                 if (_refCount != nullptr) {
                     _refCount->AddRef();
                 }
+                ASSERT(_refCount != nullptr);
             }
             template <typename DERIVEDTYPE>
             explicit ProxyType(const ProxyType<DERIVEDTYPE>& copy)
@@ -512,18 +525,17 @@ POP_WARNING()
 
                 return (result);
             }
-            inline void AddRef() const
+            inline uint32_t AddRef() const
             {
                 // Only allowed on valid objects.
                 ASSERT(_refCount != nullptr);
 
-                _refCount->AddRef();
+                return (_refCount->AddRef());
             }
             inline bool operator==(const ProxyType<CONTEXT>& a_RHS) const
             {
                 return (_refCount == a_RHS._refCount);
             }
-
             inline bool operator!=(const ProxyType<CONTEXT>& a_RHS) const
             {
                 return !(operator==(a_RHS));
@@ -532,10 +544,17 @@ POP_WARNING()
             {
                 return ((_refCount != nullptr) && (_realObject == &a_RHS));
             }
-
             inline bool operator!=(const CONTEXT& a_RHS) const
             {
                 return (!operator==(a_RHS));
+            }
+            inline bool operator==(const std::nullptr_t&) const
+            {
+                return (_refCount == nullptr);
+            }
+            inline bool operator!=(const std::nullptr_t&) const
+            {
+                return (_refCount != nullptr);
             }
 
             inline CONTEXT* operator->() const
@@ -636,6 +655,32 @@ POP_WARNING()
                 }
 
                 return (newItem);
+            }
+
+        public:
+
+            // only for debug puposes!!! (only specific friends can access this for that reason)
+            class LastRefAccessor {
+                template <typename U> friend class SingletonProxyType;
+
+            private:
+                static bool LastRef(const ProxyType<CONTEXT>& proxy)
+                {
+                    return proxy.LastRef();
+                }
+            };
+
+        private:
+
+            inline bool LastRef() const 
+            {
+                ASSERT(_refCount != nullptr);
+                const ProxyObject<CONTEXT>* po = dynamic_cast<const ProxyObject<CONTEXT>*>(_refCount);
+                bool lastref = true;
+                if (po != nullptr) {
+                    lastref = (po->_refCount == 1);
+                }
+                return lastref;
             }
 
         private:
@@ -1175,7 +1220,7 @@ POP_WARNING()
         class UnlinkStorage {
         public:
             UnlinkStorage() = delete;
-            UnlinkStorage& operator= (const UnlinkStorage&) = delete;
+            UnlinkStorage& operator=(const UnlinkStorage&) = delete;
 
             UnlinkStorage(void (*callback)(void*), void* thisPtr)
                 : _callback(callback)
@@ -1784,7 +1829,28 @@ POP_WARNING()
 
                 return (result);
             }
-
+            template<typename ACTION>
+            void Visit(ACTION&& action)
+            {
+                _lock.Lock();
+                for (auto& entry : _list) {
+                    if (action(entry.first) == true) {
+                        break;
+                    }
+                }
+                _lock.Unlock();
+            }
+            template<typename ACTION>
+            void Visit(ACTION&& action) const
+            {
+                _lock.Lock();
+                for (auto const& entry : _list) {
+                    if (action(entry.first) == true) {
+                        break;
+                    }
+                }
+                _lock.Unlock();
+            }
             void Clear()
             {
                 _lock.Lock();

@@ -18,34 +18,48 @@
  */
 
 #pragma once
-#include "TextMessage.h"
 
-namespace WPEFramework {
+#include "Module.h"
+
+namespace Thunder {
+
 namespace Messaging {
 
     struct EXTERNAL IEventFactory {
         virtual ~IEventFactory() = default;
-        virtual Core::ProxyType<Core::Messaging::IEvent> Create() = 0;
+        virtual Core::ProxyType<Core::Messaging::MessageInfo> GetMetadata() = 0;
+        virtual Core::ProxyType<Core::Messaging::IEvent> GetMessage() = 0;
     };
 
-    class EXTERNAL TraceFactory : public IEventFactory {
+    template<typename METADATA, typename EVENT>
+    class TraceFactoryType : public IEventFactory {
     public:
-        TraceFactory(const TraceFactory&) = delete;
-        TraceFactory& operator=(const TraceFactory&) = delete;
+        TraceFactoryType(const TraceFactoryType<METADATA, EVENT>&) = delete;
+        TraceFactoryType<METADATA, EVENT>& operator=(const TraceFactoryType<METADATA, EVENT>&) = delete;
 
-        TraceFactory() : _tracePool(2) {
-        }
-        ~TraceFactory() override = default;
-
-    public:
-        Core::ProxyType<Core::Messaging::IEvent> Create() override
+        TraceFactoryType() : _eventPool(2), _metadataPool(2)
         {
-            Core::ProxyType<TextMessage> proxy = _tracePool.Element();
-            return Core::ProxyType<Core::Messaging::IEvent>(proxy);
+        }
+        ~TraceFactoryType() override = default;
+
+    public:
+        Core::ProxyType<Core::Messaging::MessageInfo> GetMetadata() override
+        {
+            Core::ProxyType<METADATA> proxy = _metadataPool.Element();
+
+            return (Core::ProxyType<Core::Messaging::MessageInfo>(proxy));
+        }
+        Core::ProxyType<Core::Messaging::IEvent> GetMessage() override
+        {
+            Core::ProxyType<EVENT> proxy = _eventPool.Element();
+
+            return (Core::ProxyType<Core::Messaging::IEvent>(proxy));
         }
 
     private:
-        Core::ProxyPoolType<Messaging::TextMessage> _tracePool;
+        Core::ProxyPoolType<EVENT> _eventPool;
+        Core::ProxyPoolType<METADATA> _metadataPool;
     };
-}
+
+} // namespace Messaging
 }

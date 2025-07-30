@@ -24,7 +24,7 @@
 
 #include <com/ICOM.h>
 
-namespace WPEFramework {
+namespace Thunder {
 namespace PluginHost {
 
     // This interface gives direct access to change occuring on the remote object
@@ -58,7 +58,9 @@ namespace PluginHost {
         static const TCHAR* ToString(const command value);
 
         virtual Core::hresult Configure(PluginHost::IShell* framework) = 0;
+
         virtual state State() const = 0;
+
         virtual Core::hresult Request(const command state) = 0;
 
         virtual void Register(IStateControl::INotification* notification) = 0;

@@ -25,7 +25,7 @@
 #include "Module.h"
 #include "IVirtualInput.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace PluginHost {
 
     class EXTERNAL VirtualInput {
@@ -176,6 +176,16 @@ POP_WARNING()
                     Add(_T("key"), &Key);
                     Add(_T("modifiers"), &Modifiers);
                 }
+                inline KeyMapEntry(KeyMapEntry&& move) noexcept
+                    : Core::JSON::Container()
+                    , Code(std::move(move.Code))
+                    , Key(std::move(move.Key))
+                    , Modifiers(std::move(move.Modifiers))
+                {
+                    Add(_T("code"), &Code);
+                    Add(_T("key"), &Key);
+                    Add(_T("modifiers"), &Modifiers);
+                }
                 ~KeyMapEntry() override = default;
 
             public:
@@ -312,6 +322,13 @@ POP_WARNING()
                 , _position(copy._position)
             {
             }
+            Iterator(Iterator&& move) noexcept
+                : _consumers(std::move(move._consumers))
+                , _index(std::move(move._index))
+                , _position(move._position)
+            {
+                move._position = ~0;
+            }
             ~Iterator()
             {
             }
@@ -320,6 +337,19 @@ POP_WARNING()
             {
                 _consumers = rhs._consumers;
                 _position = ~0;
+
+                return (*this);
+            }
+
+            Iterator& operator=(Iterator&& move) noexcept
+            {
+                if (this != &move) {
+                    _consumers = std::move(move._consumers);
+                    _index = std::move(move._index);
+                    _position = move._position;
+
+                    move._position = ~0;
+                }
 
                 return (*this);
             }
@@ -397,6 +427,14 @@ POP_WARNING()
                         Add(_T("code"), &Code);
                         Add(_T("mods"), &Mods);
                     }
+                    KeyCode(KeyCode&& move) noexcept
+                        : Core::JSON::Container()
+                        , Code(std::move(move.Code))
+                        , Mods(std::move(move.Mods))
+                    {
+                        Add(_T("code"), &Code);
+                        Add(_T("mods"), &Mods);
+                    }
                     virtual ~KeyCode() = default;
 
                 public:
@@ -417,6 +455,14 @@ POP_WARNING()
                     : Core::JSON::Container()
                     , In(copy.In)
                     , Out(copy.Out)
+                {
+                    Add(_T("in"), &In);
+                    Add(_T("out"), &Out);
+                }
+                Conversion(Conversion&& move) noexcept
+                    : Core::JSON::Container()
+                    , In(std::move(move.In))
+                    , Out(std::move(move.Out))
                 {
                     Add(_T("in"), &In);
                     Add(_T("out"), &Out);
@@ -797,7 +843,8 @@ POP_WARNING()
             VirtualInputChannelServer() = delete;
             VirtualInputChannelServer(VirtualInputChannelServer&&) = delete;
             VirtualInputChannelServer(const VirtualInputChannelServer&) = delete;
-            VirtualInputChannelServer& operator= (const VirtualInputChannelServer&) = delete;
+            VirtualInputChannelServer& operator=(VirtualInputChannelServer&&) = delete;
+            VirtualInputChannelServer& operator=(const VirtualInputChannelServer&) = delete;
 
             VirtualInputChannelServer(IPCUserInput& parent, const Core::NodeId& sourceName)
                 : BaseClass(sourceName, 32)
@@ -865,7 +912,7 @@ POP_WARNING()
         };
 
     public:
-        void Initialize(const type t, const string& locator, const bool enabled)
+        void Initialize(const type t VARIABLE_IS_NOT_USED, const string& locator, const bool enabled)
         {
             ASSERT(_keyHandler == nullptr);
 #if defined(__WINDOWS__) || defined(__APPLE__)
@@ -923,6 +970,6 @@ namespace Core {
 
 } // namespace Core
 
-} // namespace WPEFramework
+} // namespace Thunder
 
 #endif // __VIRTUAL_INPUT__

@@ -6,12 +6,14 @@
 #include <iomanip>
 #include <iostream>
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Messaging {
     class EXTERNAL LocalTracer {
     public:
         struct EXTERNAL ICallback {
-            virtual void Output(const Core::Messaging::IStore::Information& info, const Core::Messaging::IEvent* message) = 0;
+            virtual ~ICallback() = default;
+
+            virtual void Message(const Core::Messaging::Metadata& metadata, const string& message) = 0;
         };
 
     private:
@@ -67,7 +69,7 @@ namespace Messaging {
         LocalTracer(const LocalTracer&) = delete;
         LocalTracer& operator=(const LocalTracer&) = delete;
 
-        ~LocalTracer()
+        virtual ~LocalTracer()
         {
             _worker.Stop();
 
@@ -77,6 +79,10 @@ namespace Messaging {
 
         void Close()
         {
+            _adminLock.Lock();
+            _callback = nullptr;
+            _adminLock.Unlock();
+
             Messaging::MessageUnit::Instance().Close();
 
             Core::Directory(_path.c_str()).Destroy();
@@ -99,12 +105,13 @@ namespace Messaging {
             if (singleton == nullptr) {
 
                 char dir[] = "/tmp/localTracer.XXXXXX";
+                Messaging::MessageUnit::Settings::Config configuration;
 
                 string Path(::mkdtemp(dir));
 
                 Core::Directory(Path.c_str()).CreatePath();
 
-                Messaging::MessageUnit::Instance().Open(Path, 0, "", false, Messaging::MessageUnit::OFF);
+                Messaging::MessageUnit::Instance().Open(Path, configuration, false, Messaging::MessageUnit::OFF);
 
                 singleton = new LocalTracer(Path);
             }
@@ -131,11 +138,13 @@ namespace Messaging {
             , _path(path)
             , _worker(*this)
             , _client(MessageSettings::Instance().Identifier(), MessageSettings::Instance().BasePath(), MessageSettings::Instance().SocketPort())
-            , _factory()
+            , _tracingFactory()
+            , _loggingFactory()
             , _callback(nullptr)
         {
             _client.AddInstance(0);
-            _client.AddFactory(Core::Messaging::Metadata::type::TRACING, &_factory);
+            _client.AddFactory(Core::Messaging::Metadata::type::TRACING, &_tracingFactory);
+            _client.AddFactory(Core::Messaging::Metadata::type::LOGGING, &_loggingFactory);
 
             _worker.Start();
 
@@ -158,8 +167,8 @@ namespace Messaging {
         void Dispatch()
         {
             _client.WaitForUpdates(Core::infinite);
-            _client.PopMessagesAndCall([this](const Core::Messaging::IStore::Information& info, const Core::ProxyType<Core::Messaging::IEvent>& message) {
-                Output(info, message.Origin());
+            _client.PopMessagesAndCall([this](const Core::ProxyType<Core::Messaging::MessageInfo>& metadata, const Core::ProxyType<Core::Messaging::IEvent>& message) {
+                Message(*metadata, message->Data());
             });
         }
 
@@ -173,12 +182,12 @@ namespace Messaging {
         }
 
     private:
-        void Output(const Core::Messaging::IStore::Information& info, const Core::Messaging::IEvent* message)
+        void Message(const Core::Messaging::MessageInfo& metadata, const string& message)
         {
             Core::SafeSyncType<Core::CriticalSection> scopedLock(_adminLock);
 
             if (_callback != nullptr) {
-                _callback->Output(info, message);
+                _callback->Message(metadata, message);
             }
         }
 
@@ -188,33 +197,13 @@ namespace Messaging {
 
         WorkerThread _worker;
         MessageClient _client;
-        TraceFactory _factory;
+        TraceFactoryType<Core::Messaging::IStore::Tracing, Core::Messaging::TextMessage> _tracingFactory;
+        TraceFactoryType<Core::Messaging::IStore::Logging, Core::Messaging::TextMessage> _loggingFactory;
 
         ICallback* _callback;
     };
 
     class ConsolePrinter : public Messaging::LocalTracer::ICallback {
-    private:
-        class IosFlagSaver {
-        public:
-            explicit IosFlagSaver(std::ostream& _ios)
-                : ios(_ios)
-                , f(_ios.flags())
-            {
-            }
-            ~IosFlagSaver()
-            {
-                ios.flags(f);
-            }
-
-            IosFlagSaver(const IosFlagSaver&) = delete;
-            IosFlagSaver& operator=(const IosFlagSaver&) = delete;
-
-        private:
-            std::ostream& ios;
-            std::ios::fmtflags f;
-        };
-
     public:
         ConsolePrinter(const ConsolePrinter&) = delete;
         ConsolePrinter& operator=(const ConsolePrinter&) = delete;
@@ -225,30 +214,36 @@ namespace Messaging {
         }
         virtual ~ConsolePrinter() = default;
 
-        void Output(const Core::Messaging::IStore::Information& info, const Core::Messaging::IEvent* message) override
+        void Message(const Core::Messaging::Metadata& metadata, const string& message) override
         {
-            IosFlagSaver saveUs(std::cout);
+            string output;
 
-            std::ostringstream output;
+            ASSERT(metadata.Type() == Core::Messaging::Metadata::type::TRACING);
 
-            output.str("");
-            output.clear();
-
-            Core::Time now(info.TimeStamp());
+            ASSERT(dynamic_cast<const Core::Messaging::IStore::Tracing*>(&metadata) != nullptr);
+            const Core::Messaging::IStore::Tracing& trace = static_cast<const Core::Messaging::IStore::Tracing&>(metadata);
+            const Core::Time now(trace.TimeStamp());
 
             if (_abbreviated == true) {
-                std::string time(now.ToTimeOnly(true));
-                output << '[' << time.c_str() << ']'
-                       << '[' << info.Module() << "]"
-                       << '[' << info.Category() << "]: "
-                       << message->Data().c_str() << std::endl;
+                const string time(now.ToTimeOnly(true));
+                output = Core::Format("[%s]:[%s]:[%s]: %s",
+                    time.c_str(),
+                    metadata.Module().c_str(),
+                    metadata.Category().c_str(),
+                    message.c_str());
             } else {
-                std::string time(now.ToRFC1123(true));
-                output << '[' << time.c_str() << "]:[" << Core::FileNameOnly(info.FileName().c_str()) << ':' << info.LineNumber() << "] "
-                       << info.Category() << ": " << message->Data().c_str() << std::endl;
+                const string time(now.ToRFC1123(true));
+                output = Core::Format("[%s]:[%s]:[%s:%u]:[%s]:[%s]: %s",
+                    time.c_str(),
+                    metadata.Module().c_str(),
+                    Core::FileNameOnly(trace.FileName().c_str()),
+                    trace.LineNumber(),
+                    trace.ClassName().c_str(),
+                    metadata.Category().c_str(),
+                    message.c_str());
             }
-
-            std::cout << output.str() << std::flush;
+            std::cout << output << std::endl
+                      << std::flush;
         }
 
     private:

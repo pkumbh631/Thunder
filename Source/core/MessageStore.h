@@ -20,14 +20,19 @@
 #pragma once
 
 #include "Module.h"
-#include "Proxy.h"
-#include "Sync.h"
-#include "Frame.h"
 
-namespace WPEFramework {
+#define ASSERT_CATEGORY General
+
+namespace Thunder {
+
 namespace Core {
 
     namespace Messaging {
+
+        extern EXTERNAL const char* MODULE_LOGGING;
+        extern EXTERNAL const char* MODULE_REPORTING;
+        extern EXTERNAL const char* MODULE_OPERATIONAL_STREAM;
+        extern EXTERNAL const char* MODULE_ASSERT;
 
         struct EXTERNAL IEvent {
             virtual ~IEvent() = default;
@@ -43,11 +48,15 @@ namespace Core {
         class EXTERNAL Metadata {
         public:
             enum type : uint8_t {
-                INVALID   = 0,
-                TRACING   = 1,
-                LOGGING   = 2,
-                REPORTING = 3
+                INVALID             = 0,
+                TRACING             = 1,
+                LOGGING             = 2,
+                REPORTING           = 3,
+                OPERATIONAL_STREAM  = 4,
+                ASSERT              = 5
             };
+
+// @stop
 
         public:
             Metadata(const Metadata&) = default;
@@ -67,31 +76,36 @@ namespace Core {
                 , _module(module)
             {
             }
-            bool operator==(const Metadata& other) const
-            {
+            virtual ~Metadata() = default;
+            
+            bool operator==(const Metadata& other) const {
                 return ((_type == other._type) && (_category == other._category) && (_module == other._module));
             }
-            bool operator!=(const Metadata& other) const
-            {
-                return !operator==(other);
+            bool operator!=(const Metadata& other) const {
+                return (!operator==(other));
             }
 
         public:
             type Type() const {
-                return _type;
+                return (_type);
             }
+
             const string& Module() const {
-                return _module;
+                return (_module);
             }
+
             const string& Category() const {
-                return _category;
+                return (_category);
             }
+
             bool Default() const {
                 return (_type == type::TRACING ? false : true);
             }
+
             bool Specific() const {
                 return ((_type == type::LOGGING) || ((Category().empty() == false) && (Module().empty() == false)));
             }
+
             bool Applicable(const Metadata& rhs) const {
                 return ((rhs.Type() == Type()) &&
                     (rhs.Module().empty() || Module().empty() || (rhs.Module() == Module())) &&
@@ -99,8 +113,8 @@ namespace Core {
             }
 
         public:
-            uint16_t Serialize(uint8_t buffer[], const uint16_t bufferSize) const;
-            uint16_t Deserialize(const uint8_t buffer[], const uint16_t bufferSize);
+            virtual uint16_t Serialize(uint8_t buffer[], const uint16_t bufferSize) const;
+            virtual uint16_t Deserialize(const uint8_t buffer[], const uint16_t bufferSize);
 
         private:
             type _type;
@@ -128,72 +142,260 @@ namespace Core {
         };
 
         /**
+        * @brief Data-Carrier class storing the Metadata and timeStamp of the Message.
+        */
+        class EXTERNAL MessageInfo : public Metadata {
+        public:
+            enum abbreviate : uint8_t {
+                FULL        = 0,
+                ABBREVIATED = 1
+            };
+
+        public:
+            MessageInfo(const MessageInfo&) = default;
+            MessageInfo& operator=(const MessageInfo&) = default;
+            MessageInfo(MessageInfo&&) = default;
+            MessageInfo& operator=(MessageInfo&&) = default;
+
+            MessageInfo()
+                : Metadata()
+                , _timeStamp()
+            {
+            }
+            MessageInfo(const Metadata& metadata)
+                : Metadata(metadata)
+                , _timeStamp()
+            {
+            }
+            MessageInfo(const Metadata& metadata, const uint64_t timeStamp)
+                : Metadata(metadata)
+                , _timeStamp(timeStamp)
+            {
+            }
+            ~MessageInfo() = default;
+
+        public:
+            uint64_t TimeStamp() const {
+                return (_timeStamp);
+            }
+            void TimeStamp(const uint64_t timeStamp) {
+                _timeStamp = timeStamp;
+            }
+
+        public:
+            uint16_t Serialize(uint8_t buffer[], const uint16_t bufferSize) const override;
+            uint16_t Deserialize(const uint8_t buffer[], const uint16_t bufferSize) override;
+            virtual string ToString(const abbreviate abbreviate) const;
+
+        private:
+            uint64_t _timeStamp;
+        };
+
+        /**
         * @brief Class responsible for:
         *        - Pushing data (Information) to a location
         */
         struct EXTERNAL IStore {
            /**
-            * @brief Data-Carrier, extended information about the message
+            * @brief Data-Carrier, extended information about the logging-type message.
+            *        No additional info for now, used for function overloading.
             */
-            class EXTERNAL Information : public Metadata {
+            class EXTERNAL Logging : public MessageInfo {
             public:
-                Information(const Information&) = default;
-                Information& operator=(const Information&) = default;
+                Logging(const Logging&) = default;
+                Logging& operator=(const Logging&) = default;
+                Logging(Logging&&) = default;
+                Logging& operator=(Logging&&) = default;
 
-                Information()
-                    : Metadata()
+                Logging()
+                    : MessageInfo()
+                {
+                }
+                Logging(const MessageInfo& messageInfo)
+                    : MessageInfo(messageInfo)
+                {
+                }
+                ~Logging() = default;
+            };
+
+            /**
+            * @brief Data-Carrier, extended information about the tracing-type message
+            */
+            class EXTERNAL Tracing : public MessageInfo {
+            public:
+                Tracing(const Tracing&) = default;
+                Tracing& operator=(const Tracing&) = default;
+                Tracing(Tracing&&) = default;
+                Tracing& operator=(Tracing&&) = default;
+
+                Tracing()
+                    : MessageInfo()
                     , _fileName()
                     , _lineNumber(0)
                     , _className()
-                    , _timeStamp(0)
                 {
                 }
-                Information(const Metadata& metadata, const string& fileName, const uint16_t lineNumber, const string& className, const uint64_t timeStamp)
-                    : Metadata(metadata)
+                Tracing(const MessageInfo& messageInfo, const string& fileName, const uint16_t lineNumber, const string& className)
+                    : MessageInfo(messageInfo)
                     , _fileName(fileName)
                     , _lineNumber(lineNumber)
                     , _className(className)
-                    , _timeStamp(timeStamp)
                 {
                 }
-                ~Information() = default;
+                ~Tracing() = default;
 
             public:
-                const string& FileName() const
-                {
+                const string& FileName() const {
                     return (_fileName);
                 }
-                uint16_t LineNumber() const
-                {
+
+                uint16_t LineNumber() const {
                     return (_lineNumber);
                 }
-                const string& ClassName() const
-                {
+
+                const string& ClassName() const {
                     return (_className);
-                }
-                uint64_t TimeStamp() const
-                {
-                    return (_timeStamp);
                 }
 
             public:
-                uint16_t Serialize(uint8_t buffer[], const uint16_t bufferSize) const;
-                uint16_t Deserialize(const uint8_t buffer[], const uint16_t bufferSize);
+                uint16_t Serialize(uint8_t buffer[], const uint16_t bufferSize) const override;
+                uint16_t Deserialize(const uint8_t buffer[], const uint16_t bufferSize) override;
+                string ToString(const abbreviate abbreviate) const override;
 
             private:
                 string _fileName;
                 uint16_t _lineNumber;
                 string _className;
-                uint64_t _timeStamp;
+        };
+
+           /**
+            * @brief Data-Carrier, extended information about the warning-reporting-type message.
+            */
+            class EXTERNAL WarningReporting : public MessageInfo {
+            public:
+                WarningReporting(const WarningReporting&) = default;
+                WarningReporting& operator=(const WarningReporting&) = default;
+                WarningReporting(WarningReporting&&) = default;
+                WarningReporting& operator=(WarningReporting&&) = default;
+
+                WarningReporting()
+                    : MessageInfo()
+                {
+                }
+                WarningReporting(const MessageInfo& messageInfo, const string& callsign)
+                    : MessageInfo(messageInfo),
+                    _callsign(callsign)
+                {
+                }
+                ~WarningReporting() = default;
+
+            public:
+                const string& Callsign() const {
+                    return (_callsign);
+                }
+
+            public:
+                uint16_t Serialize(uint8_t buffer[], const uint16_t bufferSize) const override;
+                uint16_t Deserialize(const uint8_t buffer[], const uint16_t bufferSize) override;
+                string ToString(const abbreviate abbreviate) const override;
+
+            private:
+                string _callsign;
             };
 
-	    public:
+           /**
+            * @brief Data-Carrier, extended information about the operational-stream-type message.
+            *        No additional info for now, used for function overloading.
+            */
+            class EXTERNAL OperationalStream : public MessageInfo {
+            public:
+                OperationalStream(const OperationalStream&) = default;
+                OperationalStream& operator=(const OperationalStream&) = default;
+                OperationalStream(OperationalStream&&) = default;
+                OperationalStream& operator=(OperationalStream&&) = default;
+
+                OperationalStream()
+                    : MessageInfo()
+                {
+                }
+                OperationalStream(const MessageInfo& messageInfo)
+                    : MessageInfo(messageInfo)
+                {
+                }
+                ~OperationalStream() = default;
+            };
+
+            /**
+            * @brief Data-Carrier, extended information about the assert-type message
+            */
+            class EXTERNAL Assert : public MessageInfo {
+            public:
+                Assert(const Assert&) = default;
+                Assert& operator=(const Assert&) = default;
+                Assert(Assert&&) = default;
+                Assert& operator=(Assert&&) = default;
+
+                Assert()
+                    : MessageInfo()
+                    , _processId(0)
+                    , _processName()
+                    , _fileName()
+                    , _lineNumber(0)
+                    , _callstack()
+                {
+                }
+                Assert(const MessageInfo& messageInfo, const pid_t processId, const string& processName, const string& fileName, const uint16_t lineNumber, const string& callstack)
+                    : MessageInfo(messageInfo)
+                    , _processId(processId)
+                    , _processName(processName)
+                    , _fileName(fileName)
+                    , _lineNumber(lineNumber)
+                    , _callstack(callstack)
+                {
+                }
+                ~Assert() = default;
+
+            public:
+                pid_t ProcessId() const {
+                    return (_processId);
+                }
+
+                const string& ProcessName() const {
+                    return (_processName);
+                }
+
+                const string& FileName() const {
+                    return (_fileName);
+                }
+
+                uint16_t LineNumber() const {
+                    return (_lineNumber);
+                }
+
+                const string& Callstack() const {
+                    return (_callstack);
+                }
+
+            public:
+                uint16_t Serialize(uint8_t buffer[], const uint16_t bufferSize) const override;
+                uint16_t Deserialize(const uint8_t buffer[], const uint16_t bufferSize) override;
+                string ToString(const abbreviate abbreviate) const override;
+
+            private:
+                pid_t _processId;
+                string _processName;
+                string _fileName;
+                uint16_t _lineNumber;
+                string _callstack;
+        };
+
+            public:
             virtual ~IStore() = default;
             static IStore* Instance();
             static void Set(IStore*);
 
             virtual bool Default(const Metadata& metadata) const = 0;
-            virtual void Push(const Information& info, const IEvent* message) = 0;
+            virtual void Push(const MessageInfo& messageInfo, const IEvent* message) = 0;
         };
 
     } // namespace Messaging

@@ -21,16 +21,16 @@
 #include "Module.h"
 #include "Communicator.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace RPC {
 
     EXTERNAL Core::ProxyType<RPC::IIPCServer> DefaultInvokeServer();
     EXTERNAL Core::ProxyType<RPC::IIPCServer> WorkerPoolInvokeServer();
 
     // This class is not thread safe. It is assumed that the Controller IUnknown
-    // is always set prior to any retrieval (WPEFramework/WPEProcess startup) and
+    // is always set prior to any retrieval (Thunder/ThunderPlugin startup) and
     // the interface is only revoked at process hsutdown, after shutting down all
-    // the other class (shutdown of WPEFrmaework or WPEProcess. So no need to
+    // the other class (shutdown of Thunder or ThunderPlugin. So no need to
     // lock the access to the _controller member variable.
     class EXTERNAL ConnectorController {
     private:
@@ -100,15 +100,15 @@ namespace RPC {
         public:
             uint32_t Initialize()
             {
-                return (CommunicatorClient::Open(Core::infinite));
+                return (CommunicatorClient::Open(_parent._channelWaitTime));
             }
             void Deintialize()
             {
-                CommunicatorClient::Close(Core::infinite);
+                CommunicatorClient::Close(_parent._channelWaitTime);
             }
             void Unlink()
             {
-                CommunicatorClient::Close(Core::infinite);
+                CommunicatorClient::Close(_parent._channelWaitTime);
             }
             void StateChange() override {
                 CommunicatorClient::StateChange();
@@ -123,9 +123,12 @@ namespace RPC {
         ConnectorType(ConnectorType<ENGINE>&&) = delete;
         ConnectorType(const ConnectorType<ENGINE>&) = delete;
         ConnectorType<ENGINE>& operator=(const ConnectorType<ENGINE>&) = delete;
+        ConnectorType<ENGINE>& operator=(ConnectorType<ENGINE>&&) = delete;
 
-        ConnectorType()
-            : _comChannels() {
+        explicit ConnectorType(const uint32_t channelWaitTime = Core::infinite)
+            : _comChannels()
+            , _channelWaitTime(channelWaitTime)
+        {
         }
         virtual ~ConnectorType() = default;
 
@@ -155,7 +158,8 @@ namespace RPC {
 
     private:
         Core::ProxyMapType<Core::NodeId, Channel> _comChannels;
+        const uint32_t _channelWaitTime; // const to make sure it threadsafe to access
     };
 
 } // namespace RPC
-} // namespace WPEFramework
+} // namespace Thunder

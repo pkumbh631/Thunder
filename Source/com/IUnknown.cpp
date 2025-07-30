@@ -19,20 +19,13 @@
 
 #include "IUnknown.h"
 #include "Administrator.h"
+#include "Communicator.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace ProxyStub {
     // -------------------------------------------------------------------------------------------
     // STUB
     // -------------------------------------------------------------------------------------------
-    UnknownStub::UnknownStub()
-    {
-    }
-
-    /* virtual */ UnknownStub::~UnknownStub()
-    {
-    }
-
     /* virtual */ void UnknownStub::Handle(const uint16_t index,
         Core::ProxyType<Core::IPCChannel>& channel,
         Core::ProxyType<RPC::InvokeMessage>& message)
@@ -69,7 +62,7 @@ namespace ProxyStub {
                 do {
                    result = implementation->Release();
                    dropReleases--;
-                } while ((dropReleases != 0) && (result == Core::ERROR_NONE));
+                } while ((dropReleases != 0) && ((result == Core::ERROR_NONE) || (result == Core::ERROR_COMPOSIT_OBJECT)));
 
                 ASSERT(dropReleases == 0);
 
@@ -83,11 +76,15 @@ namespace ProxyStub {
                 uint32_t newInterfaceId(reader.Number<uint32_t>());
 
                 void* newInterface = implementation->QueryInterface(newInterfaceId);
-                response.Number<Core::instance_id>(RPC::instance_cast<void*>(newInterface));
 
                 if (newInterface != nullptr) {
-                    RPC::Administrator::Instance().RegisterInterface(channel, newInterface, newInterfaceId);
+                    if (RPC::Administrator::Instance().RegisterInterface(channel, newInterface, newInterfaceId) == false) {
+                        Convert(newInterface)->Release();
+                        newInterface = nullptr;
+                    }
                 }
+
+                response.Number<Core::instance_id>(RPC::instance_cast<void*>(newInterface));
 
                 break;
             }
@@ -102,6 +99,15 @@ namespace ProxyStub {
     // -------------------------------------------------------------------------------------------
     // PROXY
     // -------------------------------------------------------------------------------------------
+    uint32_t UnknownProxy::Id() const
+    {
+        uint32_t id = 0;
+        if (_channel.IsValid() == true) {
+            id = _channel->Id();
+        }
+        return (id);
+    }
+
     static class UnknownInstantiation {
     public:
         UnknownInstantiation()

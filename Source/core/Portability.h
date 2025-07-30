@@ -91,6 +91,15 @@
   #endif
 #endif
 
+#if defined(__APPLE__)
+    #pragma clang diagnostic push
+    #pragma clang diagnostic ignored "-Wgnu-zero-variadic-macro-arguments"
+#elif defined(__clang__)
+    #pragma clang system_header
+#elif defined(__GNUC__)
+    #pragma GCC system_header
+#endif
+
 #ifdef __WINDOWS__
     #define DO_PRAGMA(x) __pragma(x)
 
@@ -103,7 +112,7 @@
 
     #if defined(__clang__)
         #define PUSH_WARNING_ _Pragma("clang diagnostic push")
-        #define PUSH_WARNING_ARG_(WARNING) DO_PRAGMA(clang diagnostic ignored #WARNING)
+        #define PUSH_WARNING_ARG_(WARNING) DO_PRAGMA(clang diagnostic ignored WARNING)
         #define POP_WARNING_ _Pragma("clang diagnostic pop")
 
     #elif (__GNUC__ >= 4)
@@ -177,6 +186,17 @@
 #define DISABLE_WARNING_NON_VIRTUAL_DESTRUCTOR
 #define DISABLE_WARNING_UNUSED_RESULT
 #define DISABLE_WARNING_TYPE_LIMITS
+#define DISABLE_WARNING_STRING_OPERATION_OVERREAD
+#define DISABLE_WARNING_PEDANTIC
+#define DISABLE_WARNING_OVERLOADED_VIRTUALS
+#define DISABLE_WARNING_CONSTANT_LOGICAL_OPERAND
+#define DISABLE_WARNING_DELETE_INCOMPLETE
+#define DISABLE_WARNING_INCONSISTENT_MISSING_OVERRIDE
+#define DISABLE_WARNING_MAYBE_UNINITIALIZED
+#define DISABLE_WARNING_FREE_NONHEAP_OBJECT
+#define DISABLE_WARNING_ARRAY_BOUNDS
+// Code Analysis - Unannotated fallthrough between switch labels
+#define DISABLE_WARNING_IMPLICIT_FALLTHROUGH PUSH_WARNING_ARG_(26819)
 
 #else
 #define DISABLE_WARNING_CONDITIONAL_EXPRESSION_IS_CONSTANT
@@ -186,7 +206,6 @@
 #define DISABLE_WARNING_NO_MATCHING_OPERATOR_DELETE
 #define DISABLE_WARNING_CONVERSION_TRUNCATION
 #define DISABLE_WARNING_POINTER_TRUNCATION
-#define DISABLE_WARNING_CONVERSION_TO_GREATERSIZE
 #define DISABLE_WARNING_THIS_IN_MEMBER_INITIALIZER_LIST
 #define DISABLE_WARNING_MULTPILE_INHERITENCE_OF_BASE_CLASS
 #define DISABLE_WARNING_DISCARD_RETURN_VALUE_FOR_NONDISCARD_FUNCTION
@@ -194,14 +213,32 @@
 #if defined(__clang__) || (__GNUC__ >= 4)
 #define DISABLE_WARNING_MISSING_FIELD_INITIALIZERS PUSH_WARNING_ARG_("-Wmissing-field-initializers")
 #define DISABLE_WARNING_UNUSED_VARIABLES PUSH_WARNING_ARG_("-Wunused-variable")
-#define DISABLE_WARNING_UNUSED_PARAMTERS PUSH_WARNING_ARG_("-Wunused-parameter")
+#define DISABLE_WARNING_UNUSED_PARAMETERS PUSH_WARNING_ARG_("-Wunused-parameter")
 #define DISABLE_WARNING_UNUSED_FUNCTIONS PUSH_WARNING_ARG_("-Wunused-function")
 #define DISABLE_WARNING_UNUSED_RESULT PUSH_WARNING_ARG_("-Wunused-result")
 #define DISABLE_WARNING_DEPRECATED_USE PUSH_WARNING_ARG_("-Wdeprecated-declarations")
 #define DISABLE_WARNING_DEPRECATED_COPY PUSH_WARNING_ARG_("-Wdeprecated-copy")
 #define DISABLE_WARNING_NON_VIRTUAL_DESTRUCTOR PUSH_WARNING_ARG_("-Wnon-virtual-dtor")
 #define DISABLE_WARNING_TYPE_LIMITS PUSH_WARNING_ARG_("-Wtype-limits")
+#define DISABLE_WARNING_PEDANTIC PUSH_WARNING_ARG_("-Wpedantic")
+#define DISABLE_WARNING_OVERLOADED_VIRTUALS PUSH_WARNING_ARG_("-Woverloaded-virtual")
+#define DISABLE_WARNING_CONVERSION_TO_GREATERSIZE PUSH_WARNING_ARG_("-Wint-to-pointer-cast")
+#define DISABLE_WARNING_CONSTANT_LOGICAL_OPERAND PUSH_WARNING_ARG_("-Wconstant-logical-operand")
+#define DISABLE_WARNING_DELETE_INCOMPLETE PUSH_WARNING_ARG_("-Wdelete-incomplete")
+#define DISABLE_WARNING_INCONSISTENT_MISSING_OVERRIDE PUSH_WARNING_ARG_("-Winconsistent-missing-override")
+#define DISABLE_WARNING_MAYBE_UNINITIALIZED PUSH_WARNING_ARG_("-Wmaybe-uninitialized")
+#define DISABLE_WARNING_FREE_NONHEAP_OBJECT PUSH_WARNING_ARG_("-Wfree-nonheap-object")
+#define DISABLE_WARNING_ARRAY_BOUNDS PUSH_WARNING_ARG_("-Warray-bounds")
+#define DISABLE_WARNING_IMPLICIT_FALLTHROUGH PUSH_WARNING_ARG_("-Wimplicit-fallthrough")
+
 #endif
+
+#if !(defined(__clang__)) && (__GNUC__ >= 4)
+#define DISABLE_WARNING_STRING_OPERATION_OVERREAD PUSH_WARNING_ARG_("-Wstringop-overread")
+#else
+#define DISABLE_WARNING_STRING_OPERATION_OVERREAD
+#endif
+
 #endif
 
 #if defined WIN32 || defined _WINDOWS
@@ -243,6 +280,8 @@ PUSH_WARNING( \
 #include <array>
 #include <thread>
 #include <stdarg.h> /* va_list, va_start, va_arg, va_end */
+#include <inttypes.h>
+#include <io.h>
 
 #define AF_NETLINK 16
 #define AF_PACKET  17
@@ -258,7 +297,7 @@ inline void SleepMs(const uint32_t time)
     ::Sleep(time);
 }
 
-EXTERNAL void SleepUs(const uint32_t time);
+EXTERNAL extern void SleepUs(const uint32_t time);
 
 #ifdef _UNICODE
 typedef std::wstring string;
@@ -329,10 +368,27 @@ typedef std::string string;
 #undef max
 #undef ERROR_NOT_SUPPORTED
 #undef ERROR_HIBERNATED
+#undef ERROR_INVALID_PARAMETER
+#undef InterlockedIncrement
+#undef InterlockedDecrement
 
 //#if _MSC_VER >= 1600
 //const std::basic_string<char>::size_type std::basic_string<char>::npos = (std::basic_string<char>::size_type) - 1;
 //#endif
+
+// NTQuerySemaphore (undocumented) is used to retrieve current count of a semaphore
+using NTSTATUS = LONG;
+using _NTQuerySemaphore = NTSTATUS(NTAPI*)(
+    HANDLE SemaphoreHandle, 
+    DWORD SemaphoreInformationClass, 
+    PVOID SemaphoreInformation, 
+    ULONG SemaphoreInformationLength,
+    PULONG ReturnLength OPTIONAL
+);
+struct SEMAPHORE_BASIC_INFORMATION {
+    ULONG CurrentCount;
+    ULONG MaximumCount;
+};
 
 #define LITTLE_ENDIAN_PLATFORM 1
 #undef ERROR
@@ -344,6 +400,7 @@ typedef std::string string;
 #endif
 
 #ifdef __LINUX__
+#include <ctype.h> // must be first for inline ::tolower() etc.
 
 #include <cstddef>
 #include <cstdint>
@@ -351,6 +408,7 @@ typedef std::string string;
 #include <cstdlib>
 #include <cassert>
 #include <string>
+#include <sys/time.h>
 #include <algorithm>
 #include <atomic>
 #include <array>
@@ -360,6 +418,7 @@ typedef std::string string;
 #include <typeinfo>
 #include <cmath>
 #include <thread>
+#include <limits.h>
 
 #include <string.h>
 #include <termios.h>
@@ -378,6 +437,7 @@ typedef std::string string;
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <inttypes.h>
 
 #include <sys/ioctl.h>
 #include <sys/resource.h>
@@ -385,8 +445,31 @@ typedef std::string string;
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/mman.h> // memfd_create in Messaging/ConsoleRedirect.h
+
+#ifndef __APPLE__
+#include <sys/inotify.h>
+#endif
 
 #include <arpa/inet.h>
+
+#ifndef _GNU_SOURCE
+    #define _GNU_SOURCE
+    #ifndef __APPLE__
+        #include <features.h>
+    #endif
+    #ifndef __USE_GNU
+        #define __MUSL__
+    #endif
+    #undef _GNU_SOURCE /* don't contaminate other includes unnecessarily */
+#else
+    #ifndef __APPLE__
+        #include <features.h>
+    #endif
+    #ifndef __USE_GNU
+        #define __MUSL__
+    #endif
+#endif
 
 #ifdef __APPLE__
 #include <pthread_impl.h>
@@ -398,13 +481,28 @@ typedef std::string string;
 #define KEY_RIGHTALT 5
 #define KEY_LEFTCTRL 6
 #define KEY_RIGHTCTRL 7
+
+#define AF_NETLINK 16
+#define AF_PACKET  17
+
+#ifndef POLLRDHUP
+#define POLLRDHUP 0x2000
+#endif
+
+#define SOCK_CLOEXEC 0
+
 extern "C" EXTERNAL void* mremap(void* old_address, size_t old_size, size_t new_size, int flags);
-int clock_gettime(int, struct timespec*);
+//clock_gettime is available in OSX Darwin >= 10.12
+//int clock_gettime(int, struct timespec*);
+extern "C" EXTERNAL uint64_t gettid();
 #else
 #include <linux/input.h>
 #include <linux/types.h>
 #include <linux/uinput.h>
 #include <sys/signalfd.h>
+
+uint64_t htonll(const uint64_t& value);
+uint64_t ntohll(const uint64_t& value);
 #endif
 
 #define ONESTOPBIT 0
@@ -436,6 +534,7 @@ int clock_gettime(int, struct timespec*);
 #define _tcsrchr wcsrchr
 #define _tcsftime wcsftime
 #define _stprintf swprintf
+#define _stnprintf swprintf
 #define _tcscpy wcscpy
 #define _tcsncpy wcsncpy
 
@@ -465,6 +564,7 @@ int clock_gettime(int, struct timespec*);
 #define _tcsrchr strrchr
 #define _tcsftime strftime
 #define _stprintf sprintf
+#define _stnprintf snprintf
 #define _tcscpy strcpy
 #define _tcsncpy strncpy
 
@@ -484,9 +584,9 @@ int clock_gettime(int, struct timespec*);
 
 #define ALLOCA alloca
 
-extern void EXTERNAL SleepMs(const unsigned int a_Time);
-extern void EXTERNAL SleepUs(const unsigned int a_Time);
-inline void EXTERNAL SleepS(unsigned int a_Time)
+EXTERNAL extern void SleepMs(const unsigned int a_Time);
+EXTERNAL extern void SleepUs(const unsigned int a_Time);
+EXTERNAL inline void SleepS(unsigned int a_Time)
 {
     ::SleepMs(a_Time * 1000);
 }
@@ -506,14 +606,17 @@ inline void EXTERNAL SleepS(unsigned int a_Time)
 #define DEPRECATED __attribute__((deprecated))
 #define VARIABLE_IS_NOT_USED __attribute__((unused))
 #define WARNING_RESULT_NOT_USED __attribute__((warn_unused_result))
+#define PRINTF_FORMAT(fmt, ellipsis) __attribute__ ((format (printf, fmt, ellipsis)))
 #elif defined(_MSC_VER)
 #define DEPRECATED __declspec(deprecated)
 #define VARIABLE_IS_NOT_USED
 #define WARNING_RESULT_NOT_USED
+#define PRINTF_FORMAT(fmt, ellipsis)
 #else
 #define DEPRECATED
 #define VARIABLE_IS_NOT_USED
 #define WARNING_RESULT_NOT_USED
+#define PRINTF_FORMAT(fmt, ellipsis)
 #endif
 
 #if !defined(NDEBUG)
@@ -526,7 +629,7 @@ inline void EXTERNAL SleepS(unsigned int a_Time)
 #endif
 
 #ifdef __LINUX__
-#if !defined(OS_ANDROID) && !defined(OS_NACL) && defined(__GLIBC__) && defined(_THUNDER_CALLSTACK_INFO)
+#if !defined(OS_ANDROID) && !defined(OS_NACL) && !defined(__UCLIBC__) && defined(__GLIBC__) && defined(_THUNDER_CALLSTACK_INFO)
 #define THUNDER_BACKTRACE 1
 #include <execinfo.h>
 #endif
@@ -571,16 +674,14 @@ struct TemplateIntToType {
 
 extern "C" {
 
-DEPRECATED inline EXTERNAL void* memrcpy(void* _Dst, const void* _Src, size_t _MaxCount)
+DEPRECATED EXTERNAL inline void* memrcpy(void* _Dst, const void* _Src, size_t _MaxCount)
 {
     return (::memmove(_Dst, _Src, _MaxCount));
 }
 
-#if defined(__LINUX__)
-uint64_t htonll(const uint64_t& value);
-uint64_t ntohll(const uint64_t& value);
-#endif
 }
+
+#define SLEEPSLOT_POLLING_TIME 100
 
 // ---- Helper types and constants ----
 #define _TXT(THETEXT) \
@@ -622,7 +723,6 @@ typedef enum {
 
 
 #endif // __LINUX__
-
 #ifdef _UNICODE
 typedef std::wstring string;
 #endif
@@ -634,12 +734,6 @@ typedef std::string string;
 #define STRLEN(STATIC_TEXT) ((sizeof(STATIC_TEXT) / sizeof(TCHAR)) - 1)
 #define EMPTY_STRING _T("")
 
-#ifdef __LINUX__
-typedef pthread_t ThreadId;
-#else
-typedef HANDLE ThreadId;
-#endif
-
 #define QUOTE(str) #str
 #define EXPAND_AND_QUOTE(str) QUOTE(str)
 
@@ -649,9 +743,14 @@ typedef HANDLE ThreadId;
 #define DEBUG_VARIABLE(x)
 #endif
 
-namespace WPEFramework {
+#ifdef __WINDOWS__
+    using pid_t = DWORD;
+#endif
 
+namespace Thunder {
 namespace Core {
+
+    class TextFragment;
 
     #if defined(__CORE_INSTANCE_BITS__) && (__CORE_INSTANCE_BITS__ != 0)
     #if __CORE_INSTANCE_BITS__ <= 8
@@ -669,6 +768,12 @@ namespace Core {
     #else
     typedef uint32_t instance_id;
     #endif
+    #endif
+
+    #ifdef __LINUX__
+    typedef pthread_t thread_id;
+    #else
+    typedef DWORD thread_id;
     #endif
 
     typedef uint32_t hresult;
@@ -734,9 +839,9 @@ namespace Core {
         std::transform(inplace.begin(), inplace.end(), inplace.begin(), ::tolower);
     }
 
-    string EXTERNAL Format(const TCHAR formatter[], ...);
-    void EXTERNAL Format(string& dst, const TCHAR format[], ...);
-    void EXTERNAL Format(string& dst, const TCHAR format[], va_list ap);
+    EXTERNAL extern string Format(const TCHAR formatter[], ...) PRINTF_FORMAT(1, 2);
+    EXTERNAL extern void Format(string& dst, const TCHAR format[], ...) PRINTF_FORMAT(2, 3);
+    EXTERNAL extern void Format(string& dst, const TCHAR format[], va_list ap);
 
     const uint32_t infinite = -1;
     static const string emptyString;
@@ -754,13 +859,13 @@ namespace Core {
 
     struct EXTERNAL IReferenceCounted {
         virtual ~IReferenceCounted() = default;
-        virtual void AddRef() const = 0;
+        virtual uint32_t AddRef() const = 0;
         virtual uint32_t Release() const = 0;
     };
 
     struct EXTERNAL IUnknown : public IReferenceCounted  {
 
-        enum {
+        enum : uint32_t {
             ID_OFFSET_INTERNAL  = 0x00000000,
             ID_OFFSET_PUBLIC    = 0x00000040,
             ID_OFFSET_CUSTOM    = 0x80000000
@@ -867,7 +972,16 @@ namespace Core {
         ERROR_CODE(ERROR_HIBERNATED, 46) \
         ERROR_CODE(ERROR_INPROC, 47) \
         ERROR_CODE(ERROR_FAILED_REGISTERED, 48) \
-        ERROR_CODE(ERROR_FAILED_UNREGISTERED, 49) 
+        ERROR_CODE(ERROR_FAILED_UNREGISTERED, 49) \
+        ERROR_CODE(ERROR_PARSE_FAILURE, 50) \
+        ERROR_CODE(ERROR_PRIVILIGED_DEFERRED, 51) \
+        ERROR_CODE(ERROR_INVALID_ENVELOPPE, 52) \
+        ERROR_CODE(ERROR_UNKNOWN_METHOD, 53) \
+        ERROR_CODE(ERROR_INVALID_PARAMETER, 54) \
+        ERROR_CODE(ERROR_INTERNAL_JSONRPC, 55) \
+        ERROR_CODE(ERROR_PARSING_ENVELOPPE, 56) \
+        ERROR_CODE(ERROR_COMPOSIT_OBJECT, 57) \
+        ERROR_CODE(ERROR_ABORTED, 58)
 
     #define ERROR_CODE(CODE, VALUE) CODE = VALUE,
 
@@ -903,24 +1017,40 @@ namespace Core {
         return (code == 0? _Err2Str<0u>() : _Err2Str<~0u>());
     };
 
-    inline const TCHAR* ErrorToString(uint32_t code)
+    inline const TCHAR* ErrorToString(Core::hresult code)
     {
-        return _bogus_ErrorToString<>(code);
+        return _bogus_ErrorToString<>(code & (~COM_ERROR));
     }
 
     #undef ERROR_CODE
+
+    EXTERNAL TextFragment Demangled(const char name[]); 
+    EXTERNAL TextFragment ClassName(const char name[]); 
+    EXTERNAL TextFragment ClassNameOnly(const char name[]); 
+    
 }
+}
+
+namespace WPEFramework {
+    using namespace Thunder;
+}
+
+#define WPEFRAMEWORK_NESTEDNAMESPACE_COMPATIBILIY(NESTED_NAMESPACE) \
+namespace WPEFramework { \
+namespace NESTED_NAMESPACE { \
+    using namespace Thunder::NESTED_NAMESPACE; \
+} \
 }
 
 extern "C" {
 
 #ifdef __WINDOWS__
-extern int EXTERNAL inet_aton(const char* cp, struct in_addr* inp);
-extern void EXTERNAL usleep(const uint32_t value);
+EXTERNAL extern int inet_aton(const char* cp, struct in_addr* inp);
+EXTERNAL extern void usleep(const uint32_t value);
 #endif
 
-void EXTERNAL DumpCallStack(const ThreadId threadId, std::list<WPEFramework::Core::callstack_info>& stack);
-uint32_t EXTERNAL GetCallStack(const ThreadId threadId, void* addresses[], const uint32_t bufferSize);
+EXTERNAL void DumpCallStack(const Thunder::Core::thread_id threadId, std::list<Thunder::Core::callstack_info>& stack);
+EXTERNAL uint32_t GetCallStack(const Thunder::Core::thread_id threadId, void* addresses[], const uint32_t bufferSize);
 
 }
 
@@ -943,6 +1073,6 @@ namespace std {
 #endif
 #endif
 
-#define THUNDER_VERSION 4
+#include "Version.h"
 
 #endif // __PORTABILITY_H

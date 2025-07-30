@@ -21,16 +21,15 @@
 
 #include "Module.h"
 
-namespace WPEFramework {
+namespace Thunder {
+
 namespace Messaging {
 
-    template <const uint16_t DATA_BUFFER_SIZE, const uint16_t METADATA_SIZE>
-    class MessageDataBufferType {
+    class EXTERNAL MessageDataBuffer {
     private:
         /**
         * @brief Metdata Callback. First two arguments are for data in. Two later for data out (responded to the other side).
         *        Third parameter is initially set to maximum length that can be written to the out buffer
-        *
         */
         class DataBuffer : public Core::CyclicBuffer {
         public:
@@ -47,10 +46,8 @@ namespace Messaging {
 
             /**
             * @brief Signal that data is available
-            *
             */
-            void Ring()
-            {
+            void Ring() {
                 _doorBell.Ring();
             }
 
@@ -68,35 +65,37 @@ namespace Messaging {
                 if (result != Core::ERROR_TIMEDOUT) {
                     _doorBell.Acknowledge();
                 }
-                return result;
+
+                return (result);
             }
-            void Relinquish()
-            {
+
+            void Relinquish() {
                 _doorBell.Relinquish();
             }
+
             uint32_t GetOverwriteSize(Cursor& cursor) override
             {
                 while (cursor.Offset() < cursor.Size()) {
                     uint16_t chunkSize = 0;
                     cursor.Peek(chunkSize);
-
-                    TRACE_L1("Flushing buffer data!");
-
                     cursor.Forward(chunkSize);
                 }
 
-                return cursor.Offset();
+                return (cursor.Offset());
             }
+
             uint32_t GetReadSize(Cursor& cursor) override
             {
                 // Just read one entry.
                 uint16_t entrySize = 0;
                 cursor.Peek(entrySize);
                 cursor.Forward(sizeof(entrySize));
-                return entrySize > sizeof(entrySize) ? entrySize - sizeof(entrySize) : 0;
+                
+                return (entrySize > sizeof(entrySize) ? entrySize - sizeof(entrySize) : 0);
             }
-            void Destroy() {
-                Core::CyclicBuffer::Destroy();
+
+            void Unlink() {
+                Core::CyclicBuffer::Unlink();
             }
 
         private:
@@ -104,10 +103,8 @@ namespace Messaging {
         };
 
     public:
-        using MetadataFrame = Core::IPCMessageType<1, Core::IPC::BufferType<METADATA_SIZE>, Core::IPC::BufferType<METADATA_SIZE>>;
-
-        MessageDataBufferType(const MessageDataBufferType&) = delete;
-        MessageDataBufferType& operator=(const MessageDataBufferType&) = delete;
+        MessageDataBuffer(const MessageDataBuffer&) = delete;
+        MessageDataBuffer& operator=(const MessageDataBuffer&) = delete;
 
         /**
          * @brief Construct a new Message Dispatcher object
@@ -117,9 +114,10 @@ namespace Messaging {
          * @param baseDirectory where to place all the necessary files. This directory should exist before creating this class.
          * @param socketPort triggers the use of using a IP socket in stead of a domain socket if the port value is not 0.
          */
-        MessageDataBufferType(const string& identifier, const uint32_t instanceId, const string& baseDirectory, const uint16_t socketPort = 0, const bool initialize = false)
+        MessageDataBuffer(const string& identifier, const uint32_t instanceId, const string& baseDirectory, const uint16_t dataSize, const uint16_t socketPort = 0, const bool initialize = false)
             : _filenames(PrepareFilenames(baseDirectory, identifier, instanceId, socketPort))
             , _dataLock()
+            , _initialize(initialize)
             // clang-format off
             , _dataBuffer(_filenames.doorBell, _filenames.data,  Core::File::USER_READ    |
                                                                  Core::File::USER_WRITE   |
@@ -129,27 +127,33 @@ namespace Messaging {
                                                                  Core::File::OTHERS_READ  |
                                                                  Core::File::OTHERS_WRITE |
                                                                  Core::File::SHAREABLE,
-                                                                 (initialize == true ? DATA_BUFFER_SIZE : 0), true)
+                                                                 (initialize == true ? dataSize : 0), true)
             // clang-format on
         {
-            if (_dataBuffer.IsValid() == false) {
-                _dataBuffer.Validate();
-            }
-
             if (_dataBuffer.IsValid() == true) {
                 if ( (initialize == false) && (_dataBuffer.Used() > 0) ) {
                     TRACE_L1("%d bytes already in the buffer instance %d", _dataBuffer.Used(), instanceId);
                     _dataBuffer.Ring();
                 }
-            } else {
-                TRACE_L1("MessageDispatcher instance %d is not valid!", instanceId);
+            }
+            else {
+                if (initialize == false) {
+                    TRACE_L1("MessageDispatcher instance %d (client) is not valid, probably because the server has not created a file yet", instanceId);
+                }
+                else {
+                    TRACE_L1("MessageDispatcher instance %d (server) is not valid, possible issues when creating a file", instanceId);
+                }
             }
         }
-        ~MessageDataBufferType() {
+        ~MessageDataBuffer()
+        {
             _dataBuffer.Relinquish();
-            _dataLock.Lock();
-            _dataBuffer.Destroy();
-            _dataLock.Unlock();
+
+            if (_initialize == true) {
+                _dataLock.Lock();
+                _dataBuffer.Unlink();
+                _dataLock.Unlock();
+            }
         }
 
     public:
@@ -171,8 +175,8 @@ namespace Messaging {
             uint32_t result = Core::ERROR_WRITE_ERROR;
             const uint16_t fullLength = sizeof(length) + length; // headerLength + informationLength
 
-            ASSERT(length > 0);
-            ASSERT(value != nullptr);
+            INTERNAL_ASSERT(length > 0);
+            INTERNAL_ASSERT(value != nullptr);
 
             _dataLock.Lock();
 
@@ -185,14 +189,15 @@ namespace Messaging {
                     _dataBuffer.Write(value, length); //value
                     _dataBuffer.Ring();
                     result = Core::ERROR_NONE;
-                } else {
+                }
+                else {
                     TRACE_L1("Buffer to small to fit message!");
                 }
             }
 
             _dataLock.Unlock();
 
-            return result;
+            return (result);
         }
 
         /**
@@ -217,11 +222,13 @@ namespace Messaging {
 
             if (_dataBuffer.IsValid() == true) {
                 const uint32_t length = _dataBuffer.Read(outValue, outLength, true);
+                
                 if (length > 0) {
                     if (length > outLength) {
                         TRACE_L1("Lost part of the message");
                         result = Core::ERROR_GENERAL;
-                    } else {
+                    }
+                    else {
                         result = Core::ERROR_NONE;
                     }
                 }
@@ -231,28 +238,36 @@ namespace Messaging {
 
             _dataLock.Unlock();
 
-            return result;
+            return (result);
         }
-        void Ring()
-        {
+
+        void Ring() {
             _dataBuffer.Ring();
         }
-        uint32_t Wait(const uint32_t waitTime)
-        {
-            return _dataBuffer.Wait(waitTime);
+
+        uint32_t Wait(const uint32_t waitTime) {
+            return (_dataBuffer.Wait(waitTime));
         }
+
         void FlushDataBuffer()
         {
             _dataLock.Lock();
+            
             if (_dataBuffer.IsValid() == true) {
                 _dataBuffer.Flush();
             }
-            _dataLock.Lock();
+
+            _dataLock.Unlock();
         }
-        bool IsValid() const
-        {
+
+        bool IsValid() const {
             return (_dataBuffer.IsValid());
         }
+
+        bool Validate() {
+            return (_dataBuffer.Open());
+        }
+
         const string& MetadataName() const {
             return (_filenames.metaData);
         }
@@ -283,6 +298,7 @@ namespace Messaging {
             string doorBellFilename;
             string metaDataFilename;
             string basePath = Core::Directory::Normalize(baseDirectory) + identifier;
+            string instancePath = basePath + '.' + Core::NumberType<uint32_t>(instanceId).Text();
 
             if (socketPort != 0) {
                 doorBellFilename = _T("127.0.0.1:") + Core::NumberType<uint16_t>(socketPort).Text();
@@ -290,17 +306,19 @@ namespace Messaging {
             }
             else {
                 doorBellFilename = basePath + _T(".doorbell");
-                metaDataFilename = basePath + '.' + Core::NumberType<uint32_t>(instanceId).Text() + _T(".metadata");
+                metaDataFilename = instancePath + _T(".metadata");
             }
 
-            string dataFilename = basePath + '.' + Core::NumberType<uint32_t>(instanceId).Text() + _T(".data");
+            string dataFilename = instancePath + _T(".data");
 
             return { doorBellFilename, metaDataFilename, dataFilename };
         }
 
     private:
         mutable Core::CriticalSection _dataLock;
+        bool _initialize;
         DataBuffer _dataBuffer;
     };
-}
+
+} // namespace Messaging 
 }

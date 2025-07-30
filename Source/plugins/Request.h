@@ -23,7 +23,7 @@
 #include "Module.h"
 #include "Config.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace PluginHost {
 
     // Forward declaration. We only have a smart pointer to a service.
@@ -36,46 +36,55 @@ namespace PluginHost {
     // used but are not actively used.
     class EXTERNAL Request : public Web::Request {
     public:
-        enum enumState : uint8_t {
+        enum state : uint8_t {
             INCOMPLETE = 0x01,
             OBLIVIOUS,
             MISSING_CALLSIGN,
             INVALID_VERSION,
             COMPLETE,
-            UNAUTHORIZED,
-            SERVICE_CALL = 0x80	
+            UNAUTHORIZED
+        };
+        enum mode : uint8_t {
+            RESTFULL    = 0x10,
+            JSONRPC     = 0x20,
+            PROPRIETARY = 0x30
         };
 
-    private:
+    public:
+        Request(Request&&) = delete;
         Request(const Request&) = delete;
+        Request& operator=(Request&&) = delete;
         Request& operator=(const Request&) = delete;
 
-    public:
         Request();
-        virtual ~Request();
+        ~Request() = default;
 
     public:
 		// This method tells us if this call was received over the 
 		// Service prefix path or (if it is false) over the JSONRPC
 		// prefix path.
-        inline bool ServiceCall() const
+        inline bool RestfulCall() const
         {
-            return ((_state & SERVICE_CALL) != 0);
+            return ((_state & 0xF0) == RESTFULL);
         }
-        inline enumState State() const
+        inline bool JSONRPCCall() const
         {
-            return (static_cast<enumState>(_state & 0x7F));
+            return ((_state & 0xF0) == JSONRPC);
+        }
+        inline state State() const
+        {
+            return (static_cast<state>(_state & 0x0F));
         }
         inline Core::ProxyType<PluginHost::Service>& Service()
         {
             return (_service);
         }
 		inline void Unauthorized() {
-            _state = ((_state & 0x80) | UNAUTHORIZED);
+            _state = ((_state & 0xF0) | UNAUTHORIZED);
 		}
 
         void Clear();
-        void Service(const uint32_t errorCode, const Core::ProxyType<PluginHost::Service>& service, const bool serviceCall);
+        void Set(const uint32_t errorCode, const Core::ProxyType<PluginHost::Service>& service, const mode type);
 
     private:
         uint8_t _state;
@@ -106,12 +115,30 @@ namespace PluginHost {
                     _average = copy._average;
                     _count = copy._count;
                 }
-                Tuple& operator= (const Tuple& rhs) {
-                    _minimum = rhs._minimum;
-                    _maximum = rhs._maximum;
-                    _average = rhs._average;
-                    _count = rhs._count;
-
+                Tuple(Tuple&& move) {
+                    _minimum = std::move(move._minimum);
+                    _maximum = std::move(move._maximum);
+                    _average = std::move(move._average);
+                    _count = std::move(move._count);
+                    move.Clear();
+                }
+                Tuple& operator=(const Tuple& rhs) {
+                    if (this != &rhs) {
+                        _minimum = rhs._minimum;
+                        _maximum = rhs._maximum;
+                        _average = rhs._average;
+                        _count = rhs._count;
+                    }
+                    return (*this);
+                }
+                Tuple& operator=(Tuple&& move) {
+                    if (this != &move) {
+                        _minimum = std::move(move._minimum);
+                        _maximum = std::move(move._maximum);
+                        _average = std::move(move._average);
+                        _count = std::move(move._count);
+                        move.Clear();
+                    }
                     return (*this);
                 }
                 ~Tuple() = default;
@@ -151,8 +178,10 @@ namespace PluginHost {
 
         public:
             Statistics() = delete;
+            Statistics(Statistics&& move) = delete;
             Statistics(const Statistics& copy) = delete;
-            Statistics& operator= (const Statistics& rhs) = delete;
+            Statistics& operator=(Statistics&& rhs) = delete;
+            Statistics& operator=(const Statistics& rhs) = delete;
 
             Statistics(const uint32_t uptill)
                 : _adminLock()
@@ -240,8 +269,10 @@ namespace PluginHost {
         }
 
     public:
+        PerformanceAdministrator(PerformanceAdministrator&&) = delete;
         PerformanceAdministrator(const PerformanceAdministrator&) = delete;
-        PerformanceAdministrator& operator= (const PerformanceAdministrator&) = delete;
+        PerformanceAdministrator& operator=(PerformanceAdministrator&&) = delete;
+        PerformanceAdministrator& operator=(const PerformanceAdministrator&) = delete;
 
         static PerformanceAdministrator& Instance() {
             static PerformanceAdministrator singleton;
@@ -278,10 +309,12 @@ namespace PluginHost {
         StatisticsList _statistics;
     };
 
-    class TrackingJSONRPC : public Web::JSONBodyType<Core::JSONRPC::Message> {
+    class TrackingJSONRPC : public  Web::JSONRPC::Body {
     public:
+        TrackingJSONRPC(TrackingJSONRPC&&) = delete;
         TrackingJSONRPC(const TrackingJSONRPC&) = delete;
-        TrackingJSONRPC& operator= (const TrackingJSONRPC&) = delete;
+        TrackingJSONRPC& operator=(TrackingJSONRPC&&) = delete;
+        TrackingJSONRPC& operator=(const TrackingJSONRPC&) = delete;
 
         TrackingJSONRPC() = default;
         ~TrackingJSONRPC() override = default;
@@ -290,14 +323,14 @@ namespace PluginHost {
         void Clear() {
             _in = 0;
             _out = 0;
-            Web::JSONBodyType<Core::JSONRPC::Message>::Clear();
+            Web::JSONRPC::Body::Clear();
 
         }
 	void In(const uint32_t data) {
             if (data == 0) {
                 uint64_t now = Core::Time::Now().Ticks();
                 _statistics.Deserialization = static_cast<uint32_t>(now - _stamp);
-		_stamp = now;
+		        _stamp = now;
             }
             _in += data;
         }
@@ -347,7 +380,7 @@ namespace PluginHost {
     };
     using JSONRPCMessage = TrackingJSONRPC;
 #else
-    using JSONRPCMessage = Web::JSONBodyType<Core::JSONRPC::Message>;
+    using JSONRPCMessage = Web::JSONRPC::Body;
 #endif
 
     typedef Core::ProxyPoolType<PluginHost::Request> RequestPool;

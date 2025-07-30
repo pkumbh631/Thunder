@@ -1,5 +1,5 @@
 /*
- * If not stated otherwise in this file or this component's LICENSE file the
+ * If not stated otherwise in this file or this component's LICENSE file the 
  * following copyright and licenses apply:
  *
  * Copyright 2020 Metrological
@@ -25,7 +25,9 @@
 
 #include <com/ICOM.h>
 
-namespace WPEFramework {
+// @insert <com/ICOM.h>
+
+namespace Thunder {
 
     namespace RPC {
         class Object;
@@ -40,41 +42,59 @@ namespace PluginHost {
         // be used to instantiate new objects (COM objects) in a new process, or monitor the state of such a process.
         // If this interface is requested outside of the main process, it will return a nullptr.
         /* @stubgen:omit */
-        struct EXTERNAL ICOMLink {
+        struct EXTERNAL ICOMLink : virtual public Core::IUnknown {
+
+            enum { ID = RPC::ID_SHELL_COMLINK };
 
             struct INotification : virtual public Core::IUnknown {
-                virtual ~INotification() = default;
                 virtual void Dangling(const Core::IUnknown* source, const uint32_t interfaceId) = 0;
                 virtual void Revoked(const Core::IUnknown* remote, const uint32_t interfaceId) = 0;
             };
 
             virtual ~ICOMLink() = default;
+
             virtual void Register(RPC::IRemoteConnection::INotification* sink) = 0;
             virtual void Unregister(const RPC::IRemoteConnection::INotification* sink) = 0;
 
             virtual void Register(INotification* sink) = 0;
-            virtual void Unregister(INotification* sink) = 0;
+            virtual void Unregister(const INotification* sink) = 0;
 
             virtual RPC::IRemoteConnection* RemoteConnection(const uint32_t connectionId) = 0;
-            virtual void* Instantiate(const RPC::Object& object, const uint32_t waitTime, uint32_t& connectionId) = 0;
+            virtual void* Instantiate(RPC::Object& object, const uint32_t waitTime, uint32_t& connectionId) = 0;
         };
 
-        enum class startup : uint8_t {
-            UNAVAILABLE,
-            DEACTIVATED,
-            ACTIVATED
+        struct EXTERNAL IConnectionServer : virtual public Core::IUnknown {
+
+            enum { ID = RPC::ID_SHELL_CONNECTIONSERVER };
+
+            struct INotification : virtual public Core::IUnknown {
+
+                enum { ID = RPC::ID_SHELL_CONNECTIONSERVER_NOTIFICATION };
+
+                virtual void Opened(const uint32_t channelId) = 0;
+                virtual void Closed(const uint32_t channelId) = 0;
+            };
+
+            virtual void Register(INotification* sink) = 0;
+            virtual void Unregister(const INotification* sink) = 0;
         };
 
         // State of the IPlugin interface associated with this shell.
         enum state : uint8_t {
             UNAVAILABLE,
             DEACTIVATED,
-            DEACTIVATION,
             ACTIVATED,
+            DEACTIVATION,
             ACTIVATION,
             PRECONDITION,
             HIBERNATED,
             DESTROYED
+        };
+
+        enum class startmode : uint8_t {
+            UNAVAILABLE = static_cast<uint8_t>(state::UNAVAILABLE),
+            DEACTIVATED = static_cast<uint8_t>(state::DEACTIVATED),
+            ACTIVATED   = static_cast<uint8_t>(state::ACTIVATED)
         };
 
         enum reason : uint8_t {
@@ -208,11 +228,11 @@ namespace PluginHost {
         //! SystemRootPath: Set <config:systemrootpath>/
         virtual Core::hresult SystemRootPath(const string& systemRootPath) = 0;
 
-        //! Startup: <config:startup>/
-        virtual PluginHost::IShell::startup Startup() const = 0;
+        //! StartMode: <config:startmode>/
+        virtual PluginHost::IShell::startmode StartMode() const = 0;
 
-        //! Startup: Set<startup,autostart,resumed states>/
-        virtual Core::hresult Startup(const startup value) = 0;
+        //! StartMode: Set<startmode states>/
+        virtual Core::hresult StartMode(const startmode value) = 0;
 
         //! Substituted Config value
         virtual string Substitute(const string& input) const = 0;
@@ -221,7 +241,7 @@ namespace PluginHost {
         virtual Core::hresult Resumed(const bool value) = 0;
 
         virtual string HashKey() const = 0;
-        
+
         virtual string ConfigLine() const = 0;
         virtual Core::hresult ConfigLine(const string& config) = 0;
         virtual Core::hresult Metadata(string& info /* @out */) const = 0;
@@ -234,9 +254,12 @@ namespace PluginHost {
         virtual ISubSystem* SubSystems() = 0;
 
         // Notify all subscribers of this service with the given string.
-        // It is expected to be JSON formatted strings as it is assumed that this is for reaching websockets clients living in
-        // the web world that have build in functionality to parse JSON structs.
-        virtual void Notify(const string& message) = 0;
+        // It is expected to be JSON formatted strings (message) as it is assumed that this is for reaching websockets clients 
+        // living in the web world that have build in functionality to parse JSON structs.
+        void Notify(const string& message) {
+            Notify(EMPTY_STRING, message);
+        }
+        virtual void Notify(const string& event, const string& message) = 0;
 
         // Allow access to the Shells, configured for the different Plugins found in the configuration.
         // Calling the QueryInterfaceByCallsign with an empty callsign will query for interfaces located
@@ -259,67 +282,113 @@ namespace PluginHost {
         /* @stubgen:stub */
         virtual uint32_t Submit(const uint32_t Id, const Core::ProxyType<Core::JSON::IElement>& response) = 0;
 
-        // Method to access, in the main space, a COM factory to instantiate objects out-of-process.
-        // This method will return a nullptr if it is NOT in the main process.
-        /* @stubgen:stub */
-        virtual ICOMLink* COMLink() = 0;
-
-        inline void Register(RPC::IRemoteConnection::INotification* sink)
+        inline Core::hresult Register(RPC::IRemoteConnection::INotification* sink)
         {
-            ICOMLink* handler(COMLink());
+            Core::hresult result;
 
-            // This method can only be used in the main process. Only this process, can instantiate a new process
-            ASSERT(handler != nullptr);
+            ASSERT(sink != nullptr);
 
-            if (handler != nullptr) {
+            ICOMLink* handler(QueryInterface<ICOMLink>());
+
+            if (handler == nullptr) {
+                result = Core::ERROR_NOT_SUPPORTED;
+            }
+            else {
                 handler->Register(sink);
+                handler->Release();
+                result = Core::ERROR_NONE;
             }
+
+            return (result);
         }
-        inline void Unregister(const RPC::IRemoteConnection::INotification* sink)
+        inline Core::hresult Unregister(const RPC::IRemoteConnection::INotification* sink)
         {
-            ICOMLink* handler(COMLink());
+            Core::hresult result = Core::ERROR_NONE;
 
-            // This method can only be used in the main process. Only this process, can instantiate a new process
-            ASSERT(handler != nullptr);
+            ASSERT(sink != nullptr);
 
-            if (handler != nullptr) {
-                handler->Unregister(sink);
+            ICOMLink* handler(QueryInterface<ICOMLink>());
+
+            if (handler == nullptr) {
+                result = Core::ERROR_NOT_SUPPORTED;
             }
+            else {
+                handler->Unregister(sink);
+                handler->Release();
+                result = Core::ERROR_NONE;
+            }
+
+            return (result);
         }
         inline void Register(ICOMLink::INotification* sink)
         {
-            ICOMLink* handler(COMLink());
+            ASSERT(sink != nullptr);
+
+            ICOMLink* handler(QueryInterface<ICOMLink>());
 
             ASSERT(handler != nullptr);
 
             if (handler != nullptr) {
                 handler->Register(sink);
+                handler->Release();
             }
         }
         inline void Unregister(ICOMLink::INotification* sink)
         {
-            ICOMLink* handler(COMLink());
+            ASSERT(sink != nullptr);
+
+            ICOMLink* handler(QueryInterface<ICOMLink>());
 
             ASSERT(handler != nullptr);
 
             if (handler != nullptr) {
                 handler->Unregister(sink);
+                handler->Release();
+            }
+        }
+        inline void Register(IConnectionServer::INotification* sink)
+        {
+            ASSERT(sink != nullptr);
+
+            IConnectionServer* handler(QueryInterface<IConnectionServer>());
+
+            ASSERT(handler != nullptr);
+
+            if (handler != nullptr) {
+                handler->Register(sink);
+                handler->Release();
+            }
+        }
+        inline void Unregister(const IConnectionServer::INotification* sink)
+        {
+            ASSERT(sink != nullptr);
+
+            IConnectionServer* handler(QueryInterface<IConnectionServer>());
+
+            ASSERT(handler != nullptr);
+
+            if (handler != nullptr) {
+                handler->Unregister(sink);
+                handler->Release();
             }
         }
         inline RPC::IRemoteConnection* RemoteConnection(const uint32_t connectionId)
         {
-            ICOMLink* handler(COMLink());
+            RPC::IRemoteConnection* connection(nullptr);
+            ICOMLink* handler(QueryInterface<ICOMLink>());
 
-            // This method can only be used in the main process. Only this process, can instantiate a new process
-            ASSERT(handler != nullptr);
+            if (handler != nullptr) {
+                connection = handler->RemoteConnection(connectionId);
+                handler->Release();
+            }
 
-            return (handler == nullptr ? nullptr : handler->RemoteConnection(connectionId));
+            return (connection);
         }
-        inline uint32_t EnablePersistentStorage(uint32_t permission = 0, const string& user = {}, const string& group = {})
+        inline uint32_t EnablePersistentStorage(uint16_t permission = 0, const string& user = {}, const string& group = {})
         {
             return (EnableStoragePath(PersistentPath(), permission, user, group));
         }
-        inline uint32_t EnableVolatileStorage(uint32_t permission = 0, const string& user = {}, const string& group = {})
+        inline uint32_t EnableVolatileStorage(uint16_t permission = 0, const string& user = {}, const string& group = {})
         {
             return (EnableStoragePath(VolatilePath(), permission, user, group));
         }
@@ -348,8 +417,10 @@ namespace PluginHost {
             return (nullptr);
         }
 
+        virtual RPC::IStringIterator* GetLibrarySearchPaths(const string&) const = 0;
+
     private:
-        inline uint32_t EnableStoragePath(const string& storagePath, uint32_t permission, const string& user, const string& group)
+        inline uint32_t EnableStoragePath(const string& storagePath, uint16_t permission, const string& user, const string& group)
         {
             uint32_t result = Core::ERROR_NONE;
 
@@ -378,11 +449,6 @@ namespace PluginHost {
 
         void* Root(uint32_t& pid, const uint32_t waitTime, const string className, const uint32_t interface, const uint32_t version = ~0);
 
-        /* @stubgen:omit */
-        virtual std::vector<string> GetLibrarySearchPaths(const string&) const
-        {
-            return std::vector<string> {};
-        }
     };
 
 } // namespace PluginHost

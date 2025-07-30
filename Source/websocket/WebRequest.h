@@ -22,7 +22,7 @@
 
 #include "Module.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Web {
     using ProtocolsArray = Core::TokenizedStringList<',', true>;
 
@@ -118,6 +118,13 @@ namespace Web {
             ASSERT(_type <= sizeof(_hashValue));
             ::memcpy(_hashValue, copy._hashValue, _type);
         }
+        Signature(Signature&& move) noexcept
+            : _type(std::move(move._type))
+        {
+            ASSERT(_type <= sizeof(_hashValue));
+            ::memcpy(_hashValue, move._hashValue, _type);
+            ::memset(move._hashValue, 0, _type);
+        }
         ~Signature()
         {
         }
@@ -126,6 +133,17 @@ namespace Web {
         {
             _type = RHS._type;
             ::memcpy(_hashValue, RHS._hashValue, _type);
+
+            return (*this);
+        }
+
+        Signature& operator=(Signature&& move) noexcept
+        {
+            if (this != &move) {
+                _type = std::move(move._type);
+                ::memcpy(_hashValue, move._hashValue, _type);
+                ::memset(move._hashValue, 0, _type);
+            }
 
             return (*this);
         }
@@ -180,6 +198,11 @@ namespace Web {
             , _token(copy._token)
         {
         }
+        Authorization(Authorization&& move) noexcept
+            : _type(std::move(move._type))
+            , _token(std::move(move._token))
+        {
+        }
         ~Authorization()
         {
         }
@@ -188,6 +211,16 @@ namespace Web {
         {
             _type = RHS._type;
             _token = RHS._token;
+
+            return (*this);
+        }
+
+        Authorization& operator=(Authorization&& move) noexcept
+        {
+            if (this != &move) {
+                _type = std::move(move._type);
+                _token = std::move(move._token);
+            }
 
             return (*this);
         }
@@ -453,22 +486,21 @@ POP_WARNING()
         }
 
     public:
-        static const TCHAR* GET;
-        static const TCHAR* HEAD;
-        static const TCHAR* POST;
-        static const TCHAR* PUT;
-        static const TCHAR* DELETE;
-        static const TCHAR* OPTIONS;
-        static const TCHAR* TRACE;
-        static const TCHAR* CONNECT;
-        static const TCHAR* PATCH;
-        static const TCHAR* MSEARCH;
-        static const TCHAR* NOTIFY;
+        static const TCHAR GET[];
+        static const TCHAR HEAD[];
+        static const TCHAR POST[];
+        static const TCHAR PUT[];
+        static const TCHAR DELETE[];
+        static const TCHAR OPTIONS[];
+        static const TCHAR TRACE[];
+        static const TCHAR CONNECT[];
+        static const TCHAR PATCH[];
+        static const TCHAR MSEARCH[];
+        static const TCHAR NOTIFY[];
 
         static const TCHAR* ToString(const type value);
         static void ToString(const Request& realObject, string& text)
         {
-            uint16_t fillCount = 0;
             bool ready = false;
             class SerializerImpl : public Serializer {
             public:
@@ -480,7 +512,7 @@ POP_WARNING()
                 ~SerializerImpl() override = default;
 
             public:
-                virtual void Serialized(const Request& /* element */)
+                void Serialized(const Request& /* element */) override
                 {
                     _ready = true;
                 }
@@ -499,8 +531,6 @@ POP_WARNING()
                 uint16_t loaded = serializer.Serialize(buffer, sizeof(buffer));
 
                 ASSERT(loaded <= sizeof(buffer));
-
-                fillCount += loaded;
 
                 text += string(reinterpret_cast<char*>(&buffer[0]), loaded);
             }
@@ -522,18 +552,18 @@ POP_WARNING()
 
             public:
                 // The whole request object is deserialised..
-                virtual void Deserialized(Web::Request& element VARIABLE_IS_NOT_USED)
+                void Deserialized(Web::Request& element VARIABLE_IS_NOT_USED) override
                 {
                 }
 
                 // We need a request object to be able to fill it with info
-                virtual Web::Request* Element()
+                Web::Request* Element() override
                 {
                     return (&_destination);
                 }
 
                 // We reached the body, link a proper body to the response..
-                virtual bool LinkBody(Web::Request& request)
+                bool LinkBody(Web::Request& request) override
                 {
                     return (request.HasBody());
                 }

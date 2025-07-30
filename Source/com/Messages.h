@@ -21,7 +21,7 @@
 
 #include "Module.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace RPC {
 
     // As COMRPC might run between a 32 bit and 64 bit system, the largest must be accommodated.
@@ -78,15 +78,19 @@ namespace RPC {
             ~Input() = default;
 
         public:
+            inline bool IsValid() const {
+                return (_data.Size() >= (sizeof(Core::instance_id) + sizeof(uint32_t) + sizeof(uint8_t)));
+            }
             inline void Clear()
             {
                 _data.Clear();
             }
             void Set(Core::instance_id implementation, const uint32_t interfaceId, const uint8_t methodId)
             {
-                uint16_t result = _data.SetNumber<Core::instance_id>(0, implementation);
-                result += _data.SetNumber<uint32_t>(result, interfaceId);
-                _data.SetNumber(result, methodId);
+                Frame::Writer frameWriter(_data, 0);
+                frameWriter.Number(implementation);
+                frameWriter.Number(interfaceId);
+                frameWriter.Number(methodId);
             }
             Core::instance_id Implementation()
             {
@@ -249,7 +253,7 @@ namespace RPC {
                 if (parentInfo.empty() == false) {
                     const size_t delimiter = std::min(parentInfo.find(','), parentInfo.length());
 
-                    if (exchangeId == ~0UL) {
+                    if (exchangeId == static_cast<uint32_t>(~0UL)) {
                         exchangeId = Core::NumberType<uint32_t>(parentInfo.c_str(), static_cast<uint32_t>(delimiter)).Value();
                     }
 
@@ -275,6 +279,9 @@ namespace RPC {
             }
 
         public:
+            bool IsValid() const {
+                return (_data.Size() >= STRINGS_OFFSET + 2);
+            }
             bool IsOffer() const
             {
                 return (Type() == OFFER);
@@ -403,7 +410,7 @@ namespace RPC {
             {
                 string value;
 
-                uint16_t length = sizeof(Core::instance_id) + sizeof(uint32_t) + sizeof(Output::mode); // skip implentation and sequencenumber
+                uint16_t length = sizeof(Core::instance_id) + sizeof(uint32_t) + sizeof(Output::mode); // skip implementation and sequence number
 
                 _data.GetText(length, value);
 
@@ -413,7 +420,7 @@ namespace RPC {
             {
                 string value;
 
-                uint16_t length = sizeof(Core::instance_id) + sizeof(uint32_t) + sizeof(Output::mode); // skip implentation and sequencenumber
+                uint16_t length = sizeof(Core::instance_id) + sizeof(uint32_t) + sizeof(Output::mode); // skip implementation and sequence number
                 length += _data.GetText(length, value);  // skip proxyStub path
 
                 _data.GetText(length, value);
@@ -424,9 +431,9 @@ namespace RPC {
             {
                 string value;
 
-                uint16_t length = sizeof(Core::instance_id) + sizeof(uint32_t) + sizeof(Output::mode); // skip implentation and sequencenumber
+                uint16_t length = sizeof(Core::instance_id) + sizeof(uint32_t) + sizeof(Output::mode); // skip implementation and sequence number
                 length += _data.GetText(length, value);  // skip proxyStub path
-                length += _data.GetText(length, value);  // skip messagingcategories
+                length += _data.GetText(length, value);  // skip messaging categories
 
                 _data.GetText(length, value);
 

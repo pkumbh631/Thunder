@@ -24,11 +24,75 @@
 #include "IPlugin.h"
 #include "IShell.h"
 #include "ISubSystem.h"
+#include "IController.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Plugin {
+    /**
+     * IMPORTANT: If updating this class to add/remove/modify configuration options, ensure
+     * the documentation in docs/plugin/config.md is updated to reflect the changes!
+    */
     class EXTERNAL Config : public Core::JSON::Container {
     public:
+        class Environment : public Core::JSON::Container {
+        public:
+            Environment()
+                : Core::JSON::Container()
+                , Key()
+                , Value()
+                , Scope(RPC::Environment::scope::LOCAL)
+            {
+                Add(_T("key"), &Key);
+                Add(_T("value"), &Value);
+                Add(_T("scope"), &Scope);
+            }
+            Environment(const Environment& copy)
+                : Core::JSON::Container()
+                , Key(copy.Key)
+                , Value(copy.Value)
+                , Scope(copy.Scope)
+            {
+                Add(_T("key"), &Key);
+                Add(_T("value"), &Value);
+                Add(_T("scope"), &Scope);
+            }
+            Environment(Environment&& move) noexcept
+                : Core::JSON::Container()
+                , Key(std::move(move.Key))
+                , Value(std::move(move.Value))
+                , Scope(std::move(move.Scope))
+            {
+                Add(_T("key"), &Key);
+                Add(_T("value"), &Value);
+                Add(_T("scope"), &Scope);
+            }
+            ~Environment() override = default;
+
+            Environment& operator=(const Environment& RHS)
+            {
+                Key = RHS.Key;
+                Value = RHS.Value;
+                Scope = RHS.Scope;
+
+                return (*this);
+            }
+            Environment& operator=(Environment&& move) noexcept
+            {
+                if (this != &move) {
+                    Key = std::move(move.Key);
+                    Value = std::move(move.Value);
+                    Scope = std::move(move.Scope);
+                }
+
+                return (*this);
+            }
+
+        public:
+            Core::JSON::String Key;
+            Core::JSON::String Value;
+            Core::JSON::EnumType<RPC::Environment::scope> Scope;
+        };
+
         class EXTERNAL RootConfig : public Core::JSON::Container {
         private:
             class RootObject : public Core::JSON::Container {
@@ -68,6 +132,7 @@ namespace Plugin {
                 , Mode(ModeType::LOCAL)
                 , RemoteAddress()
                 , Configuration(false)
+                , Environments()
             {
                 Add(_T("locator"), &Locator);
                 Add(_T("user"), &User);
@@ -78,6 +143,7 @@ namespace Plugin {
                 Add(_T("mode"), &Mode);
                 Add(_T("remoteaddress"), &RemoteAddress);
                 Add(_T("configuration"), &Configuration);
+                Add(_T("environments"), &Environments);
             }
             RootConfig(const PluginHost::IShell* info)
                 : Core::JSON::Container()
@@ -90,6 +156,7 @@ namespace Plugin {
                 , Mode(ModeType::LOCAL)
                 , RemoteAddress()
                 , Configuration(false)
+                , Environments()
             {
                 Add(_T("locator"), &Locator);
                 Add(_T("user"), &User);
@@ -100,6 +167,7 @@ namespace Plugin {
                 Add(_T("mode"), &Mode);
                 Add(_T("remoteaddress"), &RemoteAddress);
                 Add(_T("configuration"), &Configuration);
+                Add(_T("environments"), &Environments);
 
                 RootObject config;
                 Core::OptionalType<Core::JSON::Error> error;
@@ -134,6 +202,7 @@ namespace Plugin {
                 , Mode(copy.Mode)
                 , RemoteAddress(copy.RemoteAddress)
                 , Configuration(copy.Configuration)
+                , Environments(copy.Environments)
             {
                 Add(_T("locator"), &Locator);
                 Add(_T("user"), &User);
@@ -144,7 +213,33 @@ namespace Plugin {
                 Add(_T("mode"), &Mode);
                 Add(_T("remoteaddress"), &RemoteAddress);
                 Add(_T("configuration"), &Configuration);
+                Add(_T("environments"), &Environments);
             }
+            RootConfig(RootConfig&& move) noexcept
+                : Core::JSON::Container()
+                , Locator(std::move(move.Locator))
+                , User(std::move(move.User))
+                , Group(std::move(move.Group))
+                , Threads(std::move(move.Threads))
+                , Priority(std::move(move.Priority))
+                , OutOfProcess(std::move(move.OutOfProcess))
+                , Mode(std::move(move.Mode))
+                , RemoteAddress(std::move(move.RemoteAddress))
+                , Configuration(std::move(move.Configuration))
+                , Environments(std::move(move.Environments))
+            {
+                Add(_T("locator"), &Locator);
+                Add(_T("user"), &User);
+                Add(_T("group"), &Group);
+                Add(_T("threads"), &Threads);
+                Add(_T("priority"), &Priority);
+                Add(_T("outofprocess"), &OutOfProcess);
+                Add(_T("mode"), &Mode);
+                Add(_T("remoteaddress"), &RemoteAddress);
+                Add(_T("configuration"), &Configuration);
+                Add(_T("environments"), &Environments);
+            }
+
             ~RootConfig() override = default;
 
             RootConfig& operator=(const RootConfig& RHS)
@@ -158,6 +253,25 @@ namespace Plugin {
                 Mode = RHS.Mode;
                 RemoteAddress = RHS.RemoteAddress;
                 Configuration = RHS.Configuration;
+                Environments = RHS.Environments;
+
+                return (*this);
+            }
+
+            RootConfig& operator=(RootConfig&& move) noexcept
+            {
+                if (this != &move) {
+                    Locator = std::move(move.Locator);
+                    User = std::move(move.User);
+                    Group = std::move(move.Group);
+                    Threads = std::move(move.Threads);
+                    Priority = std::move(move.Priority);
+                    OutOfProcess = std::move(move.OutOfProcess);
+                    Mode = std::move(move.Mode);
+                    RemoteAddress = std::move(move.RemoteAddress);
+                    Configuration = std::move(move.Configuration);
+                    Environments = std::move(move.Environments);
+                }
 
                 return (*this);
             }
@@ -177,7 +291,19 @@ namespace Plugin {
                 }
                 return result;
             }
+            std::vector<RPC::Object::Environment> Environment() const
+            {
+                std::vector<RPC::Object::Environment> environmentList;
 
+                if (Environments.IsSet() == true) {
+                    Core::JSON::ArrayType<Config::Environment>::ConstIterator index(Environments.Elements());
+                    while (index.Next() == true) {
+                        environmentList.emplace_back(RPC::Object::Environment(index.Current().Key.Value(), index.Current().Value.Value(), index.Current().Scope.Value()));
+                    }
+                }
+                return environmentList;
+            }
+ 
         public:
             Core::JSON::String Locator;
             Core::JSON::String User;
@@ -188,14 +314,7 @@ namespace Plugin {
             Core::JSON::EnumType<ModeType> Mode;
             Core::JSON::String RemoteAddress;
             Core::JSON::String Configuration;
-        };
-
-        public:
-            enum startup : uint8_t {
-            UNAVAILABLE,
-            DEACTIVATED,
-            SUSPENDED,
-            RESUMED
+            Core::JSON::ArrayType<Config::Environment> Environments;
         };
 
     public:
@@ -205,33 +324,39 @@ namespace Plugin {
             , Locator()
             , ClassName()
             , Versions()
-            , AutoStart(true)
             , Resumed(false)
             , WebUI()
             , Precondition()
             , Termination()
+            , Control()
             , Configuration(false)
             , PersistentPathPostfix()
             , VolatilePathPostfix()
             , SystemRootPath()
             , StartupOrder(50)
-            , Startup(PluginHost::IShell::startup::DEACTIVATED)
+            , Throttle(~0)
+            , StartMode(PluginHost::IShell::startmode::ACTIVATED)
+            , Communicator()
+            , Root()
         {
             Add(_T("callsign"), &Callsign);
             Add(_T("locator"), &Locator);
             Add(_T("classname"), &ClassName);
             Add(_T("versions"), &Versions);
-            Add(_T("autostart"), &AutoStart);
             Add(_T("resumed"), &Resumed);
             Add(_T("webui"), &WebUI);
             Add(_T("precondition"), &Precondition);
             Add(_T("termination"), &Termination);
+            Add(_T("control"), &Control);
             Add(_T("configuration"), &Configuration);
             Add(_T("persistentpathpostfix"), &PersistentPathPostfix);
             Add(_T("volatilepathpostfix"), &VolatilePathPostfix);
             Add(_T("systemrootpath"), &SystemRootPath);
             Add(_T("startuporder"), &StartupOrder);
-            Add(_T("startmode"), &Startup);
+            Add(_T("throttle"), &Throttle);
+            Add(_T("startmode"), &StartMode);
+            Add(_T("communicator"), &Communicator);
+            Add(_T("root"), &Root);
         }
         Config(const Config& copy)
             : Core::JSON::Container()
@@ -239,34 +364,81 @@ namespace Plugin {
             , Locator(copy.Locator)
             , ClassName(copy.ClassName)
             , Versions(copy.Versions)
-            , AutoStart(copy.AutoStart)
             , Resumed(copy.Resumed)
             , WebUI(copy.WebUI)
             , Precondition(copy.Precondition)
             , Termination(copy.Termination)
+            , Control(copy.Control)
             , Configuration(copy.Configuration)
             , PersistentPathPostfix(copy.PersistentPathPostfix)
             , VolatilePathPostfix(copy.VolatilePathPostfix)
             , SystemRootPath(copy.SystemRootPath)
             , StartupOrder(copy.StartupOrder)
-            , Startup(copy.Startup)
+            , Throttle(copy.Throttle)
+            , StartMode(copy.StartMode)
+            , Communicator(copy.Communicator)
+            , Root(copy.Root)
         {
             Add(_T("callsign"), &Callsign);
             Add(_T("locator"), &Locator);
             Add(_T("classname"), &ClassName);
             Add(_T("versions"), &Versions);
-            Add(_T("autostart"), &AutoStart);
             Add(_T("resumed"), &Resumed);
             Add(_T("webui"), &WebUI);
             Add(_T("precondition"), &Precondition);
             Add(_T("termination"), &Termination);
+            Add(_T("control"), &Control);
             Add(_T("configuration"), &Configuration);
             Add(_T("persistentpathpostfix"), &PersistentPathPostfix);
             Add(_T("volatilepathpostfix"), &VolatilePathPostfix);
             Add(_T("systemrootpath"), &SystemRootPath);
             Add(_T("startuporder"), &StartupOrder);
-            Add(_T("startmode"), &Startup);
+            Add(_T("throttle"), &Throttle);
+            Add(_T("startmode"), &StartMode);
+            Add(_T("communicator"), &Communicator);
+            Add(_T("root"), &Root);
         }
+        Config(Config&& move) noexcept
+            : Core::JSON::Container()
+            , Callsign(std::move(move.Callsign))
+            , Locator(std::move(move.Locator))
+            , ClassName(std::move(move.ClassName))
+            , Versions(std::move(move.Versions))
+            , Resumed(std::move(move.Resumed))
+            , WebUI(std::move(move.WebUI))
+            , Precondition(std::move(move.Precondition))
+            , Termination(std::move(move.Termination))
+            , Control(std::move(move.Control))
+            , Configuration(std::move(move.Configuration))
+            , PersistentPathPostfix(std::move(move.PersistentPathPostfix))
+            , VolatilePathPostfix(std::move(move.VolatilePathPostfix))
+            , SystemRootPath(std::move(move.SystemRootPath))
+            , StartupOrder(std::move(move.StartupOrder))
+            , Throttle(std::move(move.Throttle))
+            , StartMode(std::move(move.StartMode))
+            , Communicator(std::move(move.Communicator))
+            , Root(std::move(move.Root))
+        {
+            Add(_T("callsign"), &Callsign);
+            Add(_T("locator"), &Locator);
+            Add(_T("classname"), &ClassName);
+            Add(_T("versions"), &Versions);
+            Add(_T("resumed"), &Resumed);
+            Add(_T("webui"), &WebUI);
+            Add(_T("precondition"), &Precondition);
+            Add(_T("termination"), &Termination);
+            Add(_T("control"), &Control);
+            Add(_T("configuration"), &Configuration);
+            Add(_T("persistentpathpostfix"), &PersistentPathPostfix);
+            Add(_T("volatilepathpostfix"), &VolatilePathPostfix);
+            Add(_T("systemrootpath"), &SystemRootPath);
+            Add(_T("startuporder"), &StartupOrder);
+            Add(_T("throttle"), &Throttle);
+            Add(_T("startmode"), &StartMode);
+            Add(_T("communicator"), &Communicator);
+            Add(_T("root"), &Root);
+        }
+
         ~Config() override = default;
 
         Config& operator=(const Config& RHS)
@@ -275,17 +447,44 @@ namespace Plugin {
             Locator = RHS.Locator;
             ClassName = RHS.ClassName;
             Versions = RHS.Versions;
-            AutoStart = RHS.AutoStart;
             Resumed = RHS.Resumed;
             WebUI = RHS.WebUI;
             Configuration = RHS.Configuration;
             Precondition = RHS.Precondition;
             Termination = RHS.Termination;
+            Control = RHS.Control;
             PersistentPathPostfix = RHS.PersistentPathPostfix;
             VolatilePathPostfix = RHS.VolatilePathPostfix;
             SystemRootPath = RHS.SystemRootPath;
             StartupOrder = RHS.StartupOrder;
-            Startup = RHS.Startup;
+            Throttle = RHS.Throttle;
+            StartMode = RHS.StartMode;
+            Communicator = RHS.Communicator;
+            Root = RHS.Root;
+
+            return (*this);
+        }
+
+        Config& operator=(Config&& move) noexcept
+        {
+            Callsign = std::move(move.Callsign);
+            Locator = std::move(move.Locator);
+            ClassName = std::move(move.ClassName);
+            Versions = std::move(move.Versions);
+            Resumed = std::move(move.Resumed);
+            WebUI = std::move(move.WebUI);
+            Configuration = std::move(move.Configuration);
+            Precondition = std::move(move.Precondition);
+            Termination = std::move(move.Termination);
+            Control = std::move(move.Control);
+            PersistentPathPostfix = std::move(move.PersistentPathPostfix);
+            VolatilePathPostfix = std::move(move.VolatilePathPostfix);
+            SystemRootPath = std::move(move.SystemRootPath);
+            StartupOrder = std::move(move.StartupOrder);
+            Throttle = std::move(move.Throttle);
+            StartMode = std::move(move.StartMode);
+            Communicator = std::move(move.Communicator);
+            Root = std::move(move.Root);
 
             return (*this);
         }
@@ -302,22 +501,59 @@ namespace Plugin {
             return (basePath + postfixPath + '/');
         }
 
+        explicit operator Exchange::Controller::IMetadata::Data::Service() const { 
+            Exchange::Controller::IMetadata::Data::Service result;
+
+            result.Callsign = Callsign;
+            result.Locator = Locator;
+            result.ClassName = ClassName;
+            result.StartMode = StartMode;
+            result.Configuration = Configuration;
+
+            if (Communicator.IsSet() == true) {
+                result.Communicator = Communicator;
+            }
+            if (PersistentPathPostfix.IsSet() == true) {
+                result.PersistentPathPostfix = PersistentPathPostfix;
+            }
+            if (VolatilePathPostfix.IsSet() == true) {
+                result.VolatilePathPostfix = VolatilePathPostfix;
+            }
+            if (SystemRootPath.IsSet() == true) {
+                result.SystemRootPath = SystemRootPath;
+            }
+            if (Precondition.IsSet() == true) {
+                result.Precondition = Precondition;
+            }
+            if (Termination.IsSet() == true) {
+                result.Termination = Termination;
+            }
+            if (Control.IsSet() == true) {
+                result.Control = Control;
+            }
+
+            return result; 
+        }
+
     public:
         Core::JSON::String Callsign;
         Core::JSON::String Locator;
         Core::JSON::String ClassName;
         Core::JSON::String Versions;
-        Core::JSON::Boolean AutoStart;
         Core::JSON::Boolean Resumed;
         Core::JSON::String WebUI;
         Core::JSON::ArrayType<Core::JSON::EnumType<PluginHost::ISubSystem::subsystem>> Precondition;
         Core::JSON::ArrayType<Core::JSON::EnumType<PluginHost::ISubSystem::subsystem>> Termination;
+        Core::JSON::ArrayType<Core::JSON::EnumType<PluginHost::ISubSystem::subsystem>> Control;
         Core::JSON::String Configuration;
         Core::JSON::String PersistentPathPostfix;
         Core::JSON::String VolatilePathPostfix;
         Core::JSON::String SystemRootPath;
         Core::JSON::DecUInt32 StartupOrder;
-        Core::JSON::EnumType<PluginHost::IShell::startup> Startup;
+        Core::JSON::DecUInt8 Throttle;
+        Core::JSON::EnumType<PluginHost::IShell::startmode> StartMode;
+        Core::JSON::String Communicator;
+        RootConfig Root;
 
         static Core::NodeId IPV4UnicastNode(const string& ifname);
 
@@ -329,18 +565,12 @@ namespace Plugin {
     };
 
     class EXTERNAL Setting : public Trace::Text {
-    private:
-        // -------------------------------------------------------------------
-        // This object should not be copied or assigned. Prevent the copy
-        // constructor and assignment constructor from being used. Compiler
-        // generated assignment and copy methods will be blocked by the
-        // following statments.
-        // Define them but do not implement them, compile error/link error.
-        // -------------------------------------------------------------------
-        Setting(const Setting& a_Copy) = delete;
-        Setting& operator=(const Setting& a_RHS) = delete;
-
     public:
+        Setting(Setting&&) = delete;
+        Setting(const Setting&) = delete;
+        Setting& operator=(Setting&&) = delete;
+        Setting& operator=(const Setting&) = delete;
+
         Setting(const string& key, const bool value)
             : Trace::Text()
         {
@@ -358,9 +588,7 @@ namespace Plugin {
             Core::NumberType<NUMBERTYPE, SIGNED, BASETYPE> number(value);
             Trace::Text::Set(_T("Setting: [") + key + _T("] set to value [") + number.Text() + _T("]"));
         }
-        ~Setting()
-        {
-        }
+        ~Setting() = default;
     };
 }
 }

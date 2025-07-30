@@ -19,10 +19,10 @@
 
 #pragma once
 
-#include "processcontainers/ProcessContainer.h"
-#include "processcontainers/common/BaseRefCount.h"
+#include "processcontainers/IProcessContainers.h"
+#include "BaseRefCount.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace ProcessContainers {
 
     class BaseContainerIterator : public BaseRefCount<IContainerIterator> {
@@ -35,7 +35,7 @@ namespace ProcessContainers {
 
         ~BaseContainerIterator() override = default;
 
-        virtual bool Next() override
+        bool Next() override
         {
             if (_current == UINT32_MAX)
                 _current = 0;
@@ -91,4 +91,4 @@ namespace ProcessContainers {
     };
 
 } // ProcessContainers
-} // WPEFramework
+} // Thunder

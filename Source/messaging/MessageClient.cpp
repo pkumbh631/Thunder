@@ -19,7 +19,8 @@
 
 #include "MessageClient.h"
 
-namespace WPEFramework {
+namespace Thunder {
+
 namespace Messaging {
 
     /**
@@ -37,6 +38,7 @@ namespace Messaging {
         , _clients()
         , _factories()
     {
+        ::memset(_readBuffer, 0, sizeof(_readBuffer));
     }
 
     /**
@@ -47,11 +49,9 @@ namespace Messaging {
     void MessageClient::AddInstance(const uint32_t id)
     {
         _adminLock.Lock();
-
         _clients.emplace(std::piecewise_construct,
             std::forward_as_tuple(id),
             std::forward_as_tuple(_identifier, id, _basePath, _socketPort));
-
         _adminLock.Unlock();
     }
 
@@ -93,7 +93,8 @@ namespace Messaging {
             _adminLock.Unlock();
 
             firstEntry->second.Wait(waitTime);
-        } else {
+        }
+        else {
             _adminLock.Unlock();
         }
     }
@@ -113,7 +114,8 @@ namespace Messaging {
             _adminLock.Unlock();
 
             firstEntry->second.Ring();
-        } else {
+        }
+        else {
             _adminLock.Unlock();
         }
     }
@@ -136,16 +138,30 @@ namespace Messaging {
     }
 
     /**
-     * @brief Get list of currently announced message controls
+     * @brief Get list of currently announced message modules
      */
-    void MessageClient::Controls(Messaging::MessageUnit::Iterator& controls) const
+    void MessageClient::Modules(std::vector<string>& modules) const
+    {
+        _adminLock.Lock();
+
+        for (auto& client : _clients) {
+            client.second.Modules(modules);
+        }
+
+        _adminLock.Unlock();
+    }
+
+    /**
+     * @brief Get list of currently announced message controls for a given module
+     */
+    void MessageClient::Controls(Messaging::MessageUnit::Iterator& controls, const string& module) const
     {
         Messaging::MessageUnit::ControlList list;
 
         _adminLock.Lock();
 
         for (auto& client : _clients) {
-            client.second.Load(list);
+            client.second.Load(list, module);
         }
 
         _adminLock.Unlock();
@@ -159,14 +175,12 @@ namespace Messaging {
      *
      * @param function function to be called on each of the messages in the buffer
      */
-    void MessageClient::PopMessagesAndCall(std::function<void(const Core::Messaging::IStore::Information& info, const Core::ProxyType<Core::Messaging::IEvent>& message)> function)
+    void MessageClient::PopMessagesAndCall(const MessageHandler& handler)
     {
-        Core::Messaging::IStore::Information information;
-        Core::ProxyType<Core::Messaging::IEvent> message;
-
         _adminLock.Lock();
 
         for (auto& client : _clients) {
+            client.second.Validate();
             uint16_t size = sizeof(_readBuffer);
 
             while (client.second.PopData(size, _readBuffer) != Core::ERROR_READ_ERROR) {
@@ -176,24 +190,36 @@ namespace Messaging {
                     size = sizeof(_readBuffer);
                 }
 
-                auto length = information.Deserialize(_readBuffer, size);
+                const Core::Messaging::Metadata::type type = static_cast<Core::Messaging::Metadata::type>(_readBuffer[0]);
+                ASSERT(type != Core::Messaging::Metadata::type::INVALID);
 
-                if ((length > sizeof(Core::Messaging::Metadata::type)) && (length < sizeof(_readBuffer))) {
-                    auto factory = _factories.find(information.Type());
-                    if (factory != _factories.end()) {
-                        message = factory->second->Create();
-                        message->Deserialize(_readBuffer + length, size - length);
-                        function(information, message);
-                    }
+                uint16_t length = 0;
+
+                ASSERT(handler != nullptr);
+
+                auto factory = _factories.find(type);
+
+                if (factory != _factories.end()) {
+                    Core::ProxyType<Core::Messaging::MessageInfo> metadata;
+                    Core::ProxyType<Core::Messaging::IEvent> message;
+
+                    metadata = factory->second->GetMetadata();
+                    message = factory->second->GetMessage();
+
+                    length = metadata->Deserialize(_readBuffer, size);
+                    length += message->Deserialize((&_readBuffer[length]), (size - length));
+
+                    handler(metadata, message);
                 }
-                else {
+
+                if (length == 0) {
                     client.second.FlushDataBuffer();
                 }
 
                 size = sizeof(_readBuffer);
             }
         }
-
+ 
         _adminLock.Unlock();
     }
 
@@ -221,5 +247,6 @@ namespace Messaging {
         _factories.erase(type);
         _adminLock.Unlock();
     }
-}
+
+} // namespace Messaging
 }

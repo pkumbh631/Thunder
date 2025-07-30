@@ -23,6 +23,7 @@
 #include "Module.h"
 #include "Portability.h"
 #include "Time.h"
+#include "Library.h"
 
 #include <sstream>
 
@@ -31,21 +32,36 @@
 #endif
 
 #define ROOT_META_DATA_1 RootMetaData_
-#define ROOT_META_DATA CONCAT_STRINGS(MODULE_NAME,ROOT_META_DATA_1)
+#define ROOT_META_DATA CONCAT_STRINGS(ROOT_META_DATA_1,MODULE_NAME)
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
 
-    struct IServiceMetadata;
+    struct EXTERNAL IService {
+        struct EXTERNAL IMetadata {
+            virtual ~IMetadata() = default;
+
+            virtual const TCHAR* ServiceName() const = 0;
+            virtual const TCHAR* Module() const = 0;
+            virtual uint8_t Major() const = 0;
+            virtual uint8_t Minor() const = 0;
+            virtual uint8_t Patch() const = 0;
+        };
+
+        virtual ~IService() = default;
+
+        virtual void* Create(const Library& library, const uint32_t interfaceNumber) = 0;
+        virtual const IMetadata* Metadata() const = 0;
+    };
 
     namespace System {
-        extern "C" const WPEFramework::Core::IServiceMetadata * ROOT_META_DATA;
+        extern "C" EXTERNAL_EXPORT const Thunder::Core::IService::IMetadata * ROOT_META_DATA;
 
-        extern "C" const char* MODULE_NAME;
+        extern "C" EXTERNAL_EXPORT const char* MODULE_NAME;
 
-        extern "C" EXTERNAL uint32_t Reboot();
+        extern "C" EXTERNAL_EXPORT uint32_t Reboot();
         extern "C" EXTERNAL_EXPORT const char* ModuleBuildRef();
-        extern "C" EXTERNAL_EXPORT const IServiceMetadata* ModuleServiceMetadata();
+        extern "C" EXTERNAL_EXPORT const IService::IMetadata* ModuleServiceMetadata();
     }
 
     class EXTERNAL SystemInfo {
@@ -135,7 +151,9 @@ namespace Core {
 
         class EXTERNAL MemorySnapshot {
         public:
+            MemorySnapshot(MemorySnapshot&& move) = default;
             MemorySnapshot(const MemorySnapshot& copy) = default;
+            MemorySnapshot& operator=(MemorySnapshot&& move) = default;
             MemorySnapshot& operator=(const MemorySnapshot& copy) = default;
             ~MemorySnapshot() = default;
 
@@ -221,8 +239,6 @@ namespace Core {
         mutable uint64_t m_freeswap;
         mutable uint64_t m_cpuload;
         mutable uint64_t m_cpuloadavg[3];
-        mutable time_t m_lastUpdateCpuStats;
-
         void UpdateCpuStats() const;
         void UpdateRealtimeInfo();
 
@@ -232,35 +248,36 @@ namespace Core {
         mutable uint64_t m_prevCpuSystemTicks;
         mutable uint64_t m_prevCpuUserTicks;
         mutable uint64_t m_prevCpuIdleTicks;
+#elif defined(__LINUX__)
+        mutable time_t m_lastUpdateCpuStats;
 #endif
     }; // class SystemInfo
 } // namespace Core
-} // namespace WPEFramework
-
+} // namespace Thunder
 
 #define MODULE_NAME_DECLARATION(buildref)                                                                     \
     extern "C" {                                                                                              \
-    namespace WPEFramework {                                                                                  \
+    namespace Thunder {                                                                                  \
         namespace Core {                                                                                      \
             namespace System {                                                                                \
-                const WPEFramework::Core::IServiceMetadata * ROOT_META_DATA = nullptr;                        \
-                const char* MODULE_NAME = DEFINE_STRING(MODULE_NAME);                                         \
-                const char* ModuleBuildRef() { return (DEFINE_STRING(buildref)); }                            \
-                const IServiceMetadata* ModuleServiceMetadata() { return (ROOT_META_DATA); }                  \
+                EXTERNAL_EXPORT const Thunder::Core::IService::IMetadata* ROOT_META_DATA = nullptr;      \
+                EXTERNAL_EXPORT const char* MODULE_NAME = DEFINE_STRING(MODULE_NAME);                         \
+                EXTERNAL_EXPORT const char* ModuleBuildRef() { return (DEFINE_STRING(buildref)); }            \
+                EXTERNAL_EXPORT const IService::IMetadata* ModuleServiceMetadata() {return(ROOT_META_DATA);}  \
             }                                                                                                 \
         }                                                                                                     \
     }                                                                                                         \
     } // extern "C" Core::System
 
-#define MODULE_NAME_ARCHIVE_DECLARATION                                                          \
-    extern "C" {                                                                                 \
-    namespace WPEFramework {                                                                     \
-        namespace Core {                                                                         \
-            namespace System {                                                                   \
-                const char* MODULE_NAME = DEFINE_STRING(MODULE_NAME);                            \
-            }                                                                                    \
-        }                                                                                        \
-    }                                                                                            \
+#define MODULE_NAME_ARCHIVE_DECLARATION                                                             \
+    extern "C" {                                                                                    \
+    namespace Thunder {                                                                        \
+        namespace Core {                                                                            \
+            namespace System {                                                                      \
+                EXTERNAL_EXPORT const char* MODULE_NAME = DEFINE_STRING(MODULE_NAME);               \
+            }                                                                                       \
+        }                                                                                           \
+    }                                                                                               \
     } // extern "C" Core::System
 
 #endif // __SYSTEMINFO_H

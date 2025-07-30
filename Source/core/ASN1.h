@@ -31,7 +31,7 @@
 // ---- Helper types and constants ----
 
 // ---- Helper functions ----
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
     namespace ASN1 {
 
@@ -52,16 +52,23 @@ namespace Core {
             {
                 if (_buffer != nullptr) {
                     _buffer[0] = 1;
+PUSH_WARNING(DISABLE_WARNING_CONSTANT_LOGICAL_OPERAND)
                     _buffer[1] = (length & 0xFF);
                     _buffer[2] = ((length >> 8) && 0xFF);
                     _buffer[3] = (length & 0xFF);
                     _buffer[4] = ((length >> 8) && 0xFF);
+POP_WARNING()
                 }
             }
             Buffer(const Buffer& copy)
                 : _buffer(copy._buffer)
             {
                 AddRef();
+            }
+            Buffer(Buffer&& move) noexcept
+                : _buffer(move._buffer)
+            {
+                move._buffer = nullptr;
             }
             ~Buffer()
             {
@@ -77,6 +84,16 @@ namespace Core {
                 }
                 return (*this);
             }
+            Buffer& operator=(Buffer&& move) noexcept
+            {
+                if (&move != this) {
+                    Release();
+                    _buffer = move._buffer;
+                    move._buffer = nullptr;
+                }
+                return (*this);
+            }
+
 
         public:
             inline void Size(const uint16_t length)
@@ -85,7 +102,9 @@ namespace Core {
 
                 if (_buffer != nullptr) {
                     _buffer[1] = (length & 0xFF);
+PUSH_WARNING(DISABLE_WARNING_CONSTANT_LOGICAL_OPERAND)
                     _buffer[2] = ((length >> 8) && 0xFF);
+POP_WARNING()
                 }
             }
             inline uint16_t Size() const
@@ -148,6 +167,15 @@ namespace Core {
                     , _buffer(copy._buffer)
                 {
                 }
+                Iterator(Iterator&& move) noexcept
+                    : _length(move._length)
+                    , _index(move._index)
+                    , _buffer(move._buffer)
+                {
+                    move._length = 0;
+                    move._index = 0xFFFF;
+                    move._buffer = 0;
+                }
                 ~Iterator()
                 {
                 }
@@ -157,6 +185,18 @@ namespace Core {
                     _length = RHS._length;
                     _index = RHS._index;
                     _buffer = RHS._buffer;
+                    return (*this);
+                }
+                Iterator& operator=(Iterator&& move) noexcept
+                {
+                    if (this != &move) {
+                        _length = move._length;
+                        _index = move._index;
+                        _buffer = move._buffer;
+                        move._length = 0;
+                        move._index = 0xFFFF;
+                        move._buffer = 0;
+                    }
                     return (*this);
                 }
 
@@ -283,6 +323,13 @@ namespace Core {
                 ::memcpy(_buffer, copy._buffer, copy._length);
                 _length = copy._length;
             }
+            OID(OID&& move) noexcept
+            {
+                ::memcpy(_buffer, move._buffer, move._length);
+                _length = move._length;
+                ::memset(move._buffer, 0, 255);
+                move._length = 0;
+            }
             ~OID()
             {
             }
@@ -292,6 +339,16 @@ namespace Core {
                 ::memcpy(_buffer, RHS._buffer, RHS._length);
                 _length = RHS._length;
 
+                return (*this);
+            }
+            OID& operator=(OID&& move) noexcept
+            {
+                if (this != &move) {
+                    ::memcpy(_buffer, move._buffer, move._length);
+                    _length = move._length;
+                    ::memset(move._buffer, 0, 255);
+                    move._length = 0;
+		}
                 return (*this);
             }
 
@@ -412,6 +469,14 @@ namespace Core {
                 , _length(copy._length)
             {
             }
+            Sequence(Sequence&& move) noexcept
+                : _buffer(std::move(move._buffer))
+                , _index(move._index)
+                , _length(move._length)
+            {
+                move._index = 0;
+                move._length = 0;
+            }
             ~Sequence()
             {
             }
@@ -422,6 +487,18 @@ namespace Core {
                 _buffer = RHS._buffer;
                 _index = RHS._index;
                 _length = RHS._length;
+
+                return (*this);
+            }
+            Sequence& operator=(Sequence&& move) noexcept
+            {
+                if (this != &move) {
+                    _buffer = std::move(move._buffer);
+                    _index = move._index;
+                    _length = move._length;
+                    move._index = 0;
+                    move._length = 0;
+                }
 
                 return (*this);
             }

@@ -21,7 +21,7 @@
 
 #include "Module.h"
 
-namespace WPEFramework {
+namespace Thunder {
 
 namespace Core {
 
@@ -59,16 +59,23 @@ namespace Core {
             KeyValue(const Core::TextFragment& data)
                 : _data(data) {
             }
-            KeyValue(KeyValue&& move)
-                : _data(move._data) {
+            KeyValue(KeyValue&& move) noexcept
+                : _data(std::move(move._data)) {
             }
             KeyValue(const KeyValue& copy)
                 : _data(copy._data) {
             }
             ~KeyValue() = default;
 
-            KeyValue& operator= (const KeyValue& RHS) {
+            KeyValue& operator=(const KeyValue& RHS) {
                 _data = RHS._data;
+                return (*this);
+            }
+
+            KeyValue& operator=(KeyValue&& move) noexcept {
+                if (this != &move) {
+                    _data = std::move(move._data);
+                }
                 return (*this);
             }
 
@@ -238,6 +245,17 @@ namespace Core {
             , _ref(copy._ref)
         {
         }
+        URL(URL&& move) noexcept
+            : _scheme(std::move(move._scheme))
+            , _username(std::move(move._username))
+            , _password(std::move(move._password))
+            , _host(std::move(move._host))
+            , _port(std::move(move._port))
+            , _path(std::move(move._path))
+            , _query(std::move(move._query))
+            , _ref(std::move(move._ref))
+        {
+        }
         ~URL()
         {
         }
@@ -272,10 +290,36 @@ namespace Core {
 
             return (*this);
         }
+        inline URL& operator=(URL&& move) noexcept
+        {
+            if (this != &move) {
+                _scheme = std::move(move._scheme);
+                _username = std::move(move._username);
+                _password = std::move(move._password);
+                _host = std::move(move._host);
+                _port = std::move(move._port);
+                _path = std::move(move._path);
+                _query = std::move(move._query);
+                _ref = std::move(move._ref);
+            }
+
+            return (*this);
+        }
 
         inline bool IsValid() const
         {
             return (_scheme != SCHEME_UNKNOWN);
+        }
+
+        inline void Clear() {
+            _scheme = SchemeType::SCHEME_UNKNOWN;
+            _username.Clear();
+            _password.Clear();
+            _host.Clear();
+            _port.Clear();
+            _path.Clear();
+            _query.Clear();
+            _ref.Clear();
         }
 
         SchemeType Type() const 

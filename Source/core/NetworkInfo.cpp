@@ -33,11 +33,13 @@
 #include <winsock2.h>
 #include <ws2ipdef.h>
 #pragma comment(lib, "iphlpapi.lib")
+#elif defined(__APPLE__)
+#include <ifaddrs.h>
+#include <net/if_dl.h>
 #elif defined(__POSIX__)
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <net/if_arp.h>
-#include <linux/rtnetlink.h>
 #include <list>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -45,15 +47,11 @@
 #include <sys/socket.h>
 #endif
 
-#ifdef __APPLE__
-#include <net/if_dl.h>
-#endif
-
-namespace WPEFramework {
+namespace Thunder {
 
 namespace Core {
 
-#ifdef __WINDOWS__
+#if defined(__WINDOWS__)
 
 /* Note: could also use malloc() and free() */
 #define MALLOC(x) HeapAlloc(GetProcessHeap(), 0, (x))
@@ -462,6 +460,10 @@ namespace Core {
         }
     }
 
+    uint32_t AdapterIterator::MACAddress(const uint8_t[6]) {
+        return (Core::ERROR_NOT_SUPPORTED);
+    }
+
     static std::map<uint64_t, ULONG> _contextSaving;
 
     uint32_t AdapterIterator::Add(const IPNode& address)
@@ -532,7 +534,194 @@ namespace Core {
         return (Core::ERROR_BAD_REQUEST);
     }
 
-#elif defined(__POSIX__)
+#elif defined(__APPLE__)
+    using AdapterAddresses = std::vector<struct ifaddrs*>;
+    using Adapters = std::map<string, AdapterAddresses>;
+
+    inline void ConvertMACToString(const uint8_t address[], const uint8_t length, const char delimiter, string& output)
+    {
+        for (uint8_t i = 0; i < length; i++) {
+            // Reason for the low-level approch is performance.
+            // In stead of using string operations, we know that each byte exists of 2 nibbles,
+            // lets just translate these nibbles to Hexadecimal numbers and add them to the output.
+            // This saves a setup of several string manipulation operations.
+            uint8_t highNibble = ((address[i] & 0xF0) >> 4);
+            uint8_t lowNibble = (address[i] & 0x0F);
+            if ((i != 0) && (delimiter != '\0')) {
+                output += delimiter;
+            }
+            output += static_cast<char>(highNibble + (highNibble >= 10 ? ('A' - 10) : '0'));
+            output += static_cast<char>(lowNibble + (lowNibble >= 10 ? ('A' - 10) : '0'));
+        }
+    }
+
+    static uint8_t LoadAdapterInfo(const uint16_t adapterIndex, AdapterAddresses& addresses)
+    {
+        struct ifaddrs *interfaces;
+        Adapters adapters;
+        if (!getifaddrs(&interfaces)) {
+
+            struct ifaddrs* index = interfaces->ifa_next;
+            while (index != nullptr) {
+
+                Adapters::iterator adapterIndex = adapters.find(index->ifa_name);
+                if (adapterIndex == adapters.end()) {
+                    AdapterAddresses addresses;
+                    addresses.push_back(index);
+                    adapters.emplace(std::piecewise_construct, std::forward_as_tuple(index->ifa_name), std::forward_as_tuple(addresses));
+                } else {
+                    AdapterAddresses& addresses = adapterIndex->second;
+                    addresses.push_back(index);
+                }
+                index = index->ifa_next;
+            }
+
+            if (adapters.size() > 0) {
+                if (adapterIndex < adapters.size()) {
+                    Adapters::iterator index = adapters.begin();
+                    std::advance(index, adapterIndex);
+                    addresses = index->second;
+                }
+            }
+        }
+        return adapters.size();
+    }
+
+    IPV4AddressIterator::IPV4AddressIterator(const uint16_t adapter)
+        : _adapter(adapter)
+    {
+    }
+
+    IPNode IPV4AddressIterator::Address() const
+    {
+        IPNode result;
+        AdapterAddresses addresses;
+        LoadAdapterInfo(_adapter, addresses);
+
+        if (addresses.size() > 0) {
+            for (auto& address: addresses) {
+                 if (address->ifa_addr->sa_family == static_cast<uint8_t>(AF_INET)) {
+                      result = IPNode(NodeId(*reinterpret_cast<struct sockaddr_in*>(address->ifa_addr)), 0);
+                      break;
+                 } else if (address->ifa_addr->sa_family == static_cast<uint8_t>(AF_INET6)) {
+                      result = IPNode(NodeId(*reinterpret_cast<struct sockaddr_in6*>(address->ifa_addr)), 0);
+                 }
+            }
+        }
+
+        return (result);
+    }
+
+    uint16_t AdapterIterator::Count() const
+    {
+        AdapterAddresses addresses;
+        uint8_t adapterCount = LoadAdapterInfo(_index, addresses);
+        return adapterCount;
+    }
+
+    string AdapterIterator::Name() const
+    {
+        ASSERT(IsValid());
+        string result(_T("Unknown"));
+        AdapterAddresses addresses;
+        LoadAdapterInfo(_index, addresses);
+
+        if (addresses.size() > 0) {
+            ToString(addresses[0]->ifa_name, result);
+        }
+
+        return (result);
+    }
+
+    string AdapterIterator::MACAddress(const char delimiter) const
+    {
+        ASSERT(IsValid());
+        string result(_T("0:0:0:0"));
+        AdapterAddresses addresses;
+        LoadAdapterInfo(_index, addresses);
+
+        if (addresses.size() > 0) {
+            for (auto& address: addresses) {
+                 if (address->ifa_addr->sa_family == AF_LINK && address->ifa_addr->sa_len >= 15) {
+                     uint8_t MAC[6];
+                     memcpy(MAC, &address->ifa_addr->sa_data[9], 6);
+                     ConvertMACToString(MAC, sizeof(MAC), delimiter, result);
+                 }
+            }
+        }
+
+        return (result);
+    }
+
+    void AdapterIterator::MACAddress(uint8_t buffer[], const uint8_t /* length */) const
+    {
+        ASSERT(IsValid());
+        AdapterAddresses addresses;
+        LoadAdapterInfo(_index, addresses);
+
+        if (addresses.size() > 0) {
+            for (auto& address: addresses) {
+                if (address->ifa_addr->sa_family == AF_LINK && address->ifa_addr->sa_len >= 15) {
+                    memcpy(buffer, &address->ifa_addr->sa_data[9], 6);
+                }
+            }
+        }
+    }
+
+    uint32_t AdapterIterator::Up(const bool)
+    {
+        // TODO: Implement
+        ASSERT(IsValid());
+
+        return (Core::ERROR_NONE);
+    }
+
+    bool AdapterIterator::IsUp() const
+    {
+        // TODO: Implement
+        ASSERT(false);
+
+        return (false);
+    }
+
+    bool AdapterIterator::IsRunning() const
+    {
+        return (true);
+    }
+
+    uint32_t AdapterIterator::MACAddress(const uint8_t[6]) {
+        return (Core::ERROR_NOT_SUPPORTED);
+    }
+
+    uint32_t AdapterIterator::Add(const IPNode& /* address */)
+    {
+        uint32_t result = Core::ERROR_NONE;
+        return (result);
+    }
+
+    uint32_t AdapterIterator::Delete(const IPNode& /* address */)
+    {
+        uint32_t result = Core::ERROR_NONE;
+        return (result);
+    }
+
+    uint32_t AdapterIterator::Gateway(const IPNode& /* network */, const NodeId& /* gateway */)
+    {
+        //TODO: Needs implementation
+        ASSERT(false);
+
+        return (Core::ERROR_BAD_REQUEST);
+    }
+
+    uint32_t AdapterIterator::Broadcast(const Core::NodeId& /* address */)
+    {
+        //TODO: Needs implementation
+        ASSERT(false);
+
+        return (Core::ERROR_BAD_REQUEST);
+    }
+
+#elif defined(__LINUX__)
 
     template <const bool ADD>
     class IPAddressModifyType : public Netlink {
@@ -719,7 +908,7 @@ namespace Core {
     class IPNetworks {
     private:
         using Map = std::map<uint32_t, Core::ProxyType<Network> >;
-        using Element = std::pair<uint32_t, Core::ProxyType<Network> >;
+        using Element = std::pair<const uint32_t, Core::ProxyType<Network> >;
         using Iterator = IteratorMapType<Map, const Core::ProxyType<const Network>&, uint32_t>;
 
         class LinkSocket : public SocketNetlink {
@@ -1070,6 +1259,7 @@ namespace Core {
         ~IPNetworks()
         {
             _linkSocket.Close();
+            _networks.clear();
         }
 
         static IPNetworks& Instance()
@@ -1091,14 +1281,19 @@ namespace Core {
             _adminLock.Unlock();
         }
         void Register(AdapterObserver::INotification* client) {
+            ASSERT(client != nullptr);
+
             _adminLock.Lock();
             std::list<AdapterObserver::INotification*>::iterator index (std::find(_observers.begin(), _observers.end(), client));
+            ASSERT(index == _observers.end());
             if (index == _observers.end()) {
                 _observers.push_back(client);
             }
             _adminLock.Unlock();
         }
         void Unregister(AdapterObserver::INotification* client) {
+            ASSERT(client != nullptr);
+
             _adminLock.Lock();
             std::list<AdapterObserver::INotification*>::iterator index (std::find(_observers.begin(), _observers.end(), client));
             if (index != _observers.end()) {
@@ -1573,9 +1768,35 @@ namespace Core {
                 }
             default:
                 // TRACE_L1("Unknown option encountered: %d", rtatp->rta_type);
-		break;
+                break;
             }
         }
+    }
+
+    uint32_t Network::MAC(const uint8_t buffer[6]) {
+        uint32_t result = (IsUp() == false ? Core::ERROR_NONE : Core::ERROR_ILLEGAL_STATE);
+
+        if (result == Core::ERROR_NONE) {
+            struct ifreq ifr;
+
+            ::bzero(ifr.ifr_name, IFNAMSIZ);
+            ::strncpy(ifr.ifr_name, _name.c_str(), IFNAMSIZ - 1);
+            ::memcpy(ifr.ifr_hwaddr.sa_data, buffer, 6);
+            ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
+
+            int fd = socket(AF_INET, SOCK_DGRAM, 0);
+            if(fd < 0) {
+                result = Core::ERROR_OPENING_FAILED;
+            }
+            else {
+                if(ioctl(fd, SIOCSIFHWADDR, &ifr) < 0)
+                {
+                    result = Core::ERROR_BAD_REQUEST;
+                }
+                ::close(fd);
+            }
+        }
+        return(result);
     }
 
     AdapterIterator::AdapterIterator()
@@ -1604,6 +1825,14 @@ namespace Core {
             while ( (Next() == true) && (Name() != name) ) { /* Intentionally left empty */ }
         }
     }
+    AdapterIterator::AdapterIterator(AdapterIterator&& move)
+        : AdapterIterator() {
+        _reset = move._reset;
+        _list = std::move(move._list);
+        _index = std::move(move._index);
+
+         move._reset = 0;
+    }
 
     AdapterIterator& AdapterIterator::operator=(const AdapterIterator& RHS)
     {
@@ -1619,10 +1848,25 @@ namespace Core {
         return (*this);
     }
 
+    AdapterIterator& AdapterIterator::operator=(AdapterIterator&& move)
+    {
+        if (this != &move) {
+            _reset = move._reset;
+            _list = std::move(move._list);
+            _index = std::move(move._index);
+
+            move._reset = 0;
+        }
+
+        return (*this);
+    }
+
 #endif
 
-    AdapterObserver::AdapterObserver(INotification* callback)
+    AdapterObserver::AdapterObserver(INotification* callback VARIABLE_IS_NOT_USED)
+#if !defined(__WINDOWS__) && !defined(__APPLE__)
         : _callback(callback)
+#endif
     {
 #ifdef __WINDOWS__
         //IoWMIOpenBlock(&GUID_NDIS_STATUS_LINK_STATE, WMIGUID_NOTIFICATION, . . .);
@@ -1630,16 +1874,16 @@ namespace Core {
 
         //void Callback(PWNODE_HEADER wnode, . . .)
         //{
-        //	auto instance = (PWNODE_SINGLE_INSTANCE)wnode;
-        //	auto header = (PNDIS_WMI_EVENT_HEADER)((PUCHAR)instance +
-        //		instance->DataBlockOffset + sizeof(ULONG));
-        //	auto linkState = (PNDIS_LINK_STATE)(header + 1);
+        //    auto instance = (PWNODE_SINGLE_INSTANCE)wnode;
+        //    auto header = (PNDIS_WMI_EVENT_HEADER)((PUCHAR)instance +
+        //                  instance->DataBlockOffset + sizeof(ULONG));
+        //    auto linkState = (PNDIS_LINK_STATE)(header + 1);
 
-        //	switch (linkState->MediaConnectState)
-        //	{
-        //	case MediaConnectStateConnected:
-        //		. . .
-        //	}
+        //    switch (linkState->MediaConnectState)
+        //    {
+        //        case MediaConnectStateConnected:
+        //                . . .
+        //    }
         //}
 
 #endif
@@ -1651,14 +1895,14 @@ namespace Core {
     }
 
     uint32_t AdapterObserver::Open() {
-#ifndef __WINDOWS__
+#if !defined(__WINDOWS__) && !defined(__APPLE__)
         IPNetworks::Instance().Register(_callback);
 #endif
         return (Core::ERROR_NONE);
     }
 
     uint32_t AdapterObserver::Close() {
-#ifndef __WINDOWS__
+#if !defined(__WINDOWS__) && !defined(__APPLE__)
         IPNetworks::Instance().Unregister(_callback);
 #endif
         return (Core::ERROR_NONE);

@@ -20,7 +20,7 @@
 #include "CyclicBuffer.h"
 #include "ProcessInfo.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
 
     namespace {
@@ -56,8 +56,35 @@ namespace Core {
             if (bufferSize != 0) {
 
                 #ifndef __WINDOWS__
-                _administration->_signal = PTHREAD_COND_INITIALIZER;
-                _administration->_mutex = PTHREAD_MUTEX_INITIALIZER;
+                pthread_condattr_t cond_attr;
+
+                // default values
+                int ret = pthread_condattr_init(&cond_attr);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+
+                ret = pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+
+                ret = pthread_cond_init(&(_administration->_signal), &cond_attr);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+
+                pthread_mutexattr_t mutex_attr;
+
+                // default values
+                ret = pthread_mutexattr_init(&mutex_attr);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+
+                // enable access for threads, also in different processes
+                ret = pthread_mutexattr_setpshared(&mutex_attr, PTHREAD_PROCESS_SHARED);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+
+#ifdef __DEBUG__
+                ret = pthread_mutexattr_settype(&mutex_attr, PTHREAD_MUTEX_ERRORCHECK);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+#endif
+
+                ret = pthread_mutex_init(&(_administration->_mutex), &mutex_attr);
+                ASSERT(ret ==0); DEBUG_VARIABLE(ret);
                 #endif
 
                 std::atomic_init(&(_administration->_head), static_cast<uint32_t>(0));
@@ -70,11 +97,7 @@ namespace Core {
                 _administration->_reserved = 0;
                 _administration->_reservedWritten = 0;
 
-                #ifndef __WINDOWS__
                 std::atomic_init(&(_administration->_reservedPID), static_cast<pid_t>(0));
-                #else
-                std::atomic_init(&(_administration->_reservedPID), static_cast<DWORD>(0));
-                #endif
 
                 _administration->_tailIndexMask = 1;
                 _administration->_roundCountModulo = 1L << 31;
@@ -120,8 +143,35 @@ namespace Core {
             if (initiator == true) {
 
 #ifndef __WINDOWS__
-                _administration->_signal = PTHREAD_COND_INITIALIZER;
-                _administration->_mutex = PTHREAD_MUTEX_INITIALIZER;
+                pthread_condattr_t cond_attr;
+
+                // default values
+                int ret = pthread_condattr_init(&cond_attr);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+
+                ret = pthread_condattr_setpshared(&cond_attr, PTHREAD_PROCESS_SHARED);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+
+                ret = pthread_cond_init(&(_administration->_signal), &cond_attr);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+
+                pthread_mutexattr_t mutex_attr;
+
+                // default values
+                ret = pthread_mutexattr_init(&mutex_attr);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+
+                // enable access for threads, also in different processes
+                ret = pthread_mutexattr_setpshared(&mutex_attr, PTHREAD_PROCESS_SHARED);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+
+#ifdef __DEBUG__
+                ret = pthread_mutexattr_settype(&mutex_attr, PTHREAD_MUTEX_ERRORCHECK);
+                ASSERT(ret == 0); DEBUG_VARIABLE(ret);
+#endif
+
+                ret = pthread_mutex_init(&(_administration->_mutex), &mutex_attr);
+                ASSERT(ret ==0); DEBUG_VARIABLE(ret);
 #endif
 
                 std::atomic_init(&(_administration->_head), static_cast<uint32_t>(0));
@@ -133,11 +183,8 @@ namespace Core {
 
                 _administration->_reserved = 0;
                 _administration->_reservedWritten = 0;
-#ifndef __WINDOWS__
+
                 std::atomic_init(&(_administration->_reservedPID), static_cast<pid_t>(0));
-#else
-                std::atomic_init(&(_administration->_reservedPID), static_cast<DWORD>(0));
-#endif
 
                 _administration->_tailIndexMask = 1;
                 _administration->_roundCountModulo = 1L << 31;
@@ -153,10 +200,11 @@ namespace Core {
     {
     }
 
-    bool CyclicBuffer::Validate() {
+    bool CyclicBuffer::Open()
+    {
         bool loaded = (_administration != nullptr);
 
-        if (loaded == false)  {
+        if (loaded == false) {
             loaded = _buffer.Load();
             if (loaded == true) {
                 _realBuffer = (&(_buffer.Buffer()[sizeof(struct control)]));
@@ -167,10 +215,19 @@ namespace Core {
         return (loaded);
     }
 
+    void CyclicBuffer::Close()
+    {
+        VARIABLE_IS_NOT_USED bool result = _buffer.Destroy();
+        ASSERT(result);
+        _realBuffer = nullptr;
+        _administration = nullptr;
+    }
+
     void CyclicBuffer::AdminLock()
     {
 #ifdef __POSIX__
-        pthread_mutex_lock(&(_administration->_mutex));
+        int ret = pthread_mutex_lock(&(_administration->_mutex));
+        ASSERT(ret == 0); DEBUG_VARIABLE(ret);
 #else
 #ifdef __DEBUG__
         if (::WaitForSingleObjectEx(_mutex, 2000, FALSE) != WAIT_OBJECT_0) {
@@ -191,18 +248,18 @@ namespace Core {
 
         if (waitTime != Core::infinite) {
 #ifdef __POSIX__
-            struct timespec structTime;
+            struct timespec structTime = {0,0};
 
-            clock_gettime(CLOCK_REALTIME, &structTime);
+            clock_gettime(CLOCK_MONOTONIC, &structTime);
 
             structTime.tv_nsec += ((waitTime % 1000) * 1000 * 1000); /* remainder, milliseconds to nanoseconds */
             structTime.tv_sec += (waitTime / 1000); // + (structTime.tv_nsec / 1000000000); /* milliseconds to seconds */
             structTime.tv_nsec = structTime.tv_nsec % 1000000000;
 
             if (pthread_cond_timedwait(&(_administration->_signal), &(_administration->_mutex), &structTime) != 0) {
-                struct timespec nowTime;
+                struct timespec nowTime = {0,0};
 
-                clock_gettime(CLOCK_REALTIME, &nowTime);
+                clock_gettime(CLOCK_MONOTONIC, &nowTime);
                 if (nowTime.tv_nsec > structTime.tv_nsec) {
 
                     result = (nowTime.tv_sec - structTime.tv_sec) * 1000 + ((nowTime.tv_nsec - structTime.tv_nsec) / 1000000);
@@ -235,7 +292,8 @@ namespace Core {
     void CyclicBuffer::AdminUnlock()
     {
 #ifdef __POSIX__
-        pthread_mutex_unlock(&(_administration->_mutex));
+        int ret = pthread_mutex_unlock(&(_administration->_mutex));
+        ASSERT(ret == 0); DEBUG_VARIABLE(ret);
 #else
         ReleaseSemaphore(_mutex, 1, nullptr);
 #endif
@@ -289,6 +347,8 @@ namespace Core {
         uint32_t head = 0;
         uint32_t offset = 0;
 
+        ASSERT(length > 0);
+
         while (!foundData) {
             oldTail = _administration->_tail;
             head = _administration->_head;
@@ -328,25 +388,25 @@ namespace Core {
                             foundData = false;
                         }
                     } else {
-                        uint32_t part1 = 0;
-                        uint32_t part2 = 0;
+                        uint32_t newOffset = 0;
 
                         if (_administration->_size < offset) {
-                            part2 = result - (offset - _administration->_size);
+                            const uint32_t skip = offset - _administration->_size;
+                            newOffset = skip + bufferLength;
+                            ::memcpy(buffer, _realBuffer + skip, bufferLength);
                         } else {
-                            part1 = _administration->_size - offset;
-                            part2 = result - part1;
-                        }
+                            const uint32_t part1 = _administration->_size - offset;
+                            newOffset = result - part1;
+                            ::memcpy(buffer, _realBuffer + offset, std::min(part1, bufferLength));
 
-                        memcpy(buffer, _realBuffer + offset, std::min(part1, bufferLength));
-
-                        if (part1 < bufferLength) {
-                            memcpy(buffer + part1, _realBuffer, bufferLength - part1);
+                            if (part1 < bufferLength) {
+                                ::memcpy(buffer + part1, _realBuffer, bufferLength - part1);
+                            }
                         }
 
                         // Add one round, but prevent overflow.
                         roundCount = (roundCount + 1) % _administration->_roundCountModulo;
-                        uint32_t newTail = part2 + roundCount * (1 + _administration->_tailIndexMask);
+                        uint32_t newTail = newOffset + roundCount * (1 + _administration->_tailIndexMask);
                         if (!_administration->_tail.compare_exchange_weak(oldTail, newTail)) {
                             foundData = false;
                         }
@@ -360,8 +420,8 @@ namespace Core {
 
     uint32_t CyclicBuffer::Write(const uint8_t buffer[], const uint32_t length)
     {
-        ASSERT(length < _administration->_size);
-        ASSERT(IsValid() == true);
+        INTERNAL_ASSERT(length < _administration->_size);
+        INTERNAL_ASSERT(IsValid() == true);
 
         uint32_t head = _administration->_head;
         uint32_t tail = _administration->_tail;
@@ -371,15 +431,14 @@ namespace Core {
         if (_administration->_reservedPID != 0) {
 #ifdef __WINDOWS__
             // We are writing because of reservation.
-            ASSERT(_administration->_reservedPID == ::GetCurrentProcessId());
+            INTERNAL_ASSERT(_administration->_reservedPID == ::GetCurrentProcessId());
 #else
             // We are writing because of reservation.
-            ASSERT(_administration->_reservedPID == ::getpid());
+            INTERNAL_ASSERT(_administration->_reservedPID == ::getpid());
 #endif
-
             // Check if we are not writing more than reserved.
             uint32_t newReservedWritten = _administration->_reservedWritten + length;
-            ASSERT(newReservedWritten <= _administration->_reserved);
+            INTERNAL_ASSERT(newReservedWritten <= _administration->_reserved);
 
             // Set up everything for actual write operation.
             writeStart = (head + _administration->_reservedWritten) % _administration->_size;
@@ -471,19 +530,20 @@ namespace Core {
 
     uint32_t CyclicBuffer::Reserve(const uint32_t length)
     {
+        pid_t processId;
+        pid_t expectedProcessId = 0;
+
 #ifdef __WINDOWS__
-        DWORD processId = GetCurrentProcessId();
-        DWORD expectedProcessId = static_cast<DWORD>(0);
+        processId = GetCurrentProcessId();
 #else
-        pid_t processId = ::getpid();
-        pid_t expectedProcessId = static_cast<pid_t>(0);
+        processId = ::getpid();
 #endif
 
         if ((length >= Size()) || (((_administration->_state.load() & state::OVERWRITE) == 0) && (length >= Free())))
             return Core::ERROR_INVALID_INPUT_LENGTH;
 
         bool noOtherReservation = atomic_compare_exchange_strong(&(_administration->_reservedPID), &expectedProcessId, processId);
-        ASSERT(noOtherReservation);
+        INTERNAL_ASSERT(noOtherReservation);
 
         if (!noOtherReservation)
             return Core::ERROR_ILLEGAL_STATE;
@@ -495,7 +555,7 @@ namespace Core {
         }
 
         AssureFreeSpace(actualLength);
-        ASSERT(actualLength <= Free());
+        INTERNAL_ASSERT(actualLength <= Free());
 
         _administration->_reserved = actualLength;
         _administration->_reservedWritten = 0;
@@ -631,4 +691,4 @@ namespace Core {
         return cursor.Size();
     }
 }
-} // namespace WPEFramework::Core
+} // namespace Thunder::Core

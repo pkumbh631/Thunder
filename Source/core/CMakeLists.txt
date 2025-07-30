@@ -22,8 +22,12 @@ find_package(Threads REQUIRED)
 find_package(ExecInfo)
 find_package(LIBRT)
 
-add_library(${TARGET} SHARED
-	DoorBell.cpp
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/Version.h.in" "${CMAKE_CURRENT_BINARY_DIR}/generated/core/Version.h" @ONLY)
+message(VERBOSE "Generated ${CMAKE_CURRENT_BINARY_DIR}/generated/core/Version.h")
+
+add_library(${TARGET}
+        Module.cpp
+        DoorBell.cpp
         CyclicBuffer.cpp
         DataElement.cpp
         DataElementFile.cpp
@@ -32,7 +36,6 @@ add_library(${TARGET} SHARED
         JSON.cpp
         JSONRPC.cpp
         Library.cpp
-        MessageException.cpp
         Netlink.cpp
         NetworkInfo.cpp
         NodeId.cpp
@@ -57,11 +60,11 @@ add_library(${TARGET} SHARED
         ResourceMonitor.cpp
         )
 
-
 #TODO: Remove all non public headers from this list,
 # All the interface headers are here, these will be installed to staging
 set(PUBLIC_HEADERS
         ASN1.h
+        AssertionControl.h
         DoorBell.h
         Config.h
         core.h
@@ -75,6 +78,7 @@ set(PUBLIC_HEADERS
         FileObserver.h
         Frame.h
         IAction.h
+        IAssertionControl.h
         IIterator.h
         IObserver.h
         IPCMessage.h
@@ -82,6 +86,7 @@ set(PUBLIC_HEADERS
         IPCChannel.h
         IPCConnector.h
         ISO639.h
+        IWarningReportingControl.h
         JSON.h
         JSONRPC.h
         KeyValue.h
@@ -89,8 +94,10 @@ set(PUBLIC_HEADERS
         Link.h
         LockableContainer.h
         Measurement.h
+        MACAddress.h
         Media.h
         MessageException.h
+        Messaging.h
         Module.h
         Netlink.h
         NetworkInfo.h
@@ -127,6 +134,7 @@ set(PUBLIC_HEADERS
         SystemInfo.h
         TextFragment.h
         TextReader.h
+        TextStreamRedirectType.h
         Thread.h
         ThreadPool.h
         Time.h
@@ -137,20 +145,22 @@ set(PUBLIC_HEADERS
         ValueRecorder.h
         XGetopt.h
         WorkerPool.h
-        IWarningReportingControl.h
         WarningReportingControl.h
         WarningReportingCategories.h
         Module.h
         CallsignTLS.h
         TokenizedStringList.h
         MessageStore.h
+        ${CMAKE_CURRENT_BINARY_DIR}/generated/core/Version.h
         )
+
+target_compile_options (${TARGET} PRIVATE -Wno-psabi)
 
 # non-buildable interface target to carry the definitions
 # All build flags that are applicable to the whole system should be set here in the 
 # core since the core is included everywhere so if they are set here, they are 
 # picked up everywhere!
-if(DISABLE_TRACING)
+if(DISABLE_TRACING OR NOT ENABLED_TRACING_LEVEL)
     target_compile_definitions(${TARGET} PUBLIC _TRACE_LEVEL=0)
     message(STATUS "Force trace level to 0")
 else()
@@ -162,12 +172,12 @@ endif()
 
 if(MESSAGING)
     target_compile_definitions(${TARGET} PUBLIC __CORE_MESSAGING__)
-    target_sources(${TARGET} PRIVATE MessageStore.cpp)
+    target_sources(${TARGET} PRIVATE Messaging.cpp MessageStore.cpp AssertionControl.cpp)
     message(STATUS "Messaging enabled")
 endif()
 
 if(WARNING_REPORTING)
-    target_sources(${TARGET} PRIVATE WarningReportingControl.cpp)
+    target_sources(${TARGET} PRIVATE WarningReportingControl.cpp WarningReportingCategories.cpp)
     target_compile_definitions(${TARGET} PUBLIC __CORE_WARNING_REPORTING__)
     message(STATUS "Warning reporting enabled")
 endif()
@@ -199,6 +209,29 @@ endif()
 
 if(BLUETOOTH_SUPPORT)
     target_compile_definitions(${TARGET} PUBLIC __CORE_BLUETOOTH_SUPPORT__)
+
+    include(GetBluez5Headers)
+
+    GetBluez5UtilHeadersFiles(Bluez5UtilHeadersFiles)
+
+    install(FILES ${Bluez5UtilHeadersFiles}
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${NAMESPACE}/core/bluez5 COMPONENT ${NAMESPACE}_Development)
+
+    GetBluez5IncludeDirs(Bluez5IncludeDirs)
+
+    foreach(path ${Bluez5IncludeDirs})
+    target_include_directories(${TARGET}
+        PUBLIC
+            $<BUILD_INTERFACE:${path}>)        
+    endforeach()
+
+    CheckBluez5InclusiveLanguage(INCLUSIVE_LANGUAGE)
+    
+    if(NOT ${INCLUSIVE_LANGUAGE})
+        #TODO: Remove NO_INCLUSIVE_LANGUAGE define when the plugins are synced to BLUEZ_HAS_NO_INCLUSIVE_LANGUAGE
+        target_compile_definitions(${TARGET} PUBLIC INTERFACE NO_INCLUSIVE_LANGUAGE BLUEZ_HAS_NO_INCLUSIVE_LANGUAGE)
+    endif()
+
     message(STATUS "Enable bluetooth support.")
 endif()
 
@@ -223,15 +256,30 @@ set_target_properties(${TARGET} PROPERTIES
           CXX_STANDARD_REQUIRED YES
           FRAMEWORK FALSE
           PUBLIC_HEADER "${PUBLIC_HEADERS}" # specify the public headers
-          VERSION ${VERSION}
           SOVERSION ${VERSION_MAJOR}
         )
 
+if(HUMAN_VERSIONED_BINARIES)
+set_target_properties(${TARGET} PROPERTIES
+        VERSION ${VERSION}
+        )
+endif()
+
+if (NOT BUILD_SHARED_LIBS)
+    set_property(TARGET  ${TARGET}
+            APPEND PROPERTY INTERFACE_POSITION_INDEPENDENT_CODE ON
+    )
+endif()
+
+if (APPLE)
+    target_compile_definitions( ${TARGET} PRIVATE __APPLE_USE_RFC_3542)
+endif()
+
 target_include_directories( ${TARGET}
         PUBLIC
-          $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+          $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/generated/core> 
           $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../> #core.h
-          $<INSTALL_INTERFACE:include/${NAMESPACE}>)
+          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/${NAMESPACE}>)
 
 if(LIBRT_FOUND)
     target_link_libraries(${TARGET}
@@ -260,13 +308,13 @@ endif()
 # Install ARTIFACTS:
 # ===========================================================================================
 install(
-        TARGETS CompileSettings ${TARGET}  EXPORT ${TARGET}Targets # for downstream dependencies
-        ARCHIVE DESTINATION lib COMPONENT libs      # static lib
-        LIBRARY DESTINATION lib COMPONENT libs      # shared lib
-        RUNTIME DESTINATION bin COMPONENT libs      # binaries
-        FRAMEWORK DESTINATION bin COMPONENT libs    # for mac
-        PUBLIC_HEADER DESTINATION include/${NAMESPACE}/core COMPONENT devel   # for mac 
-        INCLUDES DESTINATION include/${NAMESPACE}   # default include path
+        TARGETS CompileSettings ${TARGET}  EXPORT ${TARGET}Targets
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT ${NAMESPACE}_Development
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} COMPONENT ${NAMESPACE}_Runtime NAMELINK_COMPONENT ${NAMESPACE}_Development
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ${NAMESPACE}_Runtime
+        FRAMEWORK DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ${NAMESPACE}_Runtime
+        PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${NAMESPACE}/core COMPONENT ${NAMESPACE}_Development   
+        INCLUDES DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/${NAMESPACE}
 )
 
 # ===========================================================================================

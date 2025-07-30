@@ -28,7 +28,9 @@
 #include <grp.h>
 #include <limits.h>
 #include <pwd.h>
+#ifndef __APPLE__
 #include <sys/prctl.h>
+#endif
 #include <unistd.h>
 #endif
 
@@ -40,7 +42,7 @@
 #include <libproc.h>
 #endif
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
 #ifndef __WINDOWS__
     const uint32_t PageSize = getpagesize();
@@ -120,7 +122,7 @@ namespace Core {
     }
 
     template <typename ACCEPTFUNCTION>
-    static void FindChildren(std::list<uint32_t>& children, ACCEPTFUNCTION acceptfunction)
+    static void FindChildren(std::list<pid_t>& children, ACCEPTFUNCTION acceptfunction)
     {
         DIR* dp;
         struct dirent* ep;
@@ -167,7 +169,7 @@ namespace Core {
      * that starts with value of *item*. The search is case-sensitive
      * in both cases.
      */
-    static void FindPid(const string& item, const bool exact, std::list<uint32_t>& pids)
+    static void FindPid(const string& item, const bool exact, std::list<pid_t>& pids)
     {
         DIR* dp;
         struct dirent* ep;
@@ -243,20 +245,20 @@ namespace Core {
         , _current()
         , _index(0)
     {
-#ifndef __WINDOWS__
-        FindChildren(_pids, [=](const uint32_t, const uint32_t) { return true; });
+#if !defined(__WINDOWS__) && !defined(__APPLE__)
+        FindChildren(_pids, [=](const pid_t, const pid_t) { return true; });
 #endif
         Reset();
     }
 
     // Get the Child Processes with a name name from a Parent with a certain name
-    ProcessInfo::Iterator::Iterator(const string& parentname, const string& childname, const bool removepath)
+    ProcessInfo::Iterator::Iterator(const string& parentname VARIABLE_IS_NOT_USED, const string& childname VARIABLE_IS_NOT_USED, const bool removepath VARIABLE_IS_NOT_USED)
         : _pids()
         , _current()
         , _index(0)
     {
-#ifndef __WINDOWS__
-        FindChildren(_pids, [=](const process_t foundparentPID, const uint32_t childPID) {
+#if !defined(__WINDOWS__) && !defined(__APPLE__)
+        FindChildren(_pids, [=](const pid_t foundparentPID, const pid_t childPID) {
             bool accept = false;
             char fullname[PATH_MAX];
             ProcessName(foundparentPID, fullname, sizeof(fullname));
@@ -274,13 +276,13 @@ namespace Core {
     }
 
     // Get the Child Processes with a name name from a Parent pid
-    ProcessInfo::Iterator::Iterator(const process_t parentPID, const string& childname, const bool removepath)
+    ProcessInfo::Iterator::Iterator(const pid_t parentPID VARIABLE_IS_NOT_USED, const string& childname VARIABLE_IS_NOT_USED, const bool removepath VARIABLE_IS_NOT_USED)
         : _pids()
         , _current()
         , _index(0)
     {
-#ifndef __WINDOWS__
-        FindChildren(_pids, [=](const process_t foundparentPID, const uint32_t childPID) {
+#if !defined(__WINDOWS__) && !defined(__APPLE__)
+        FindChildren(_pids, [=](const pid_t foundparentPID, const pid_t childPID) {
             bool accept = false;
 
             if (parentPID == foundparentPID) {
@@ -295,7 +297,7 @@ namespace Core {
     }
 
     // Get the Children of the given PID.
-    ProcessInfo::Iterator::Iterator(const process_t parentPID)
+    ProcessInfo::Iterator::Iterator(const pid_t parentPID VARIABLE_IS_NOT_USED)
     {
 #ifdef __WINDOWS__
         HANDLE hSnapShot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -310,9 +312,11 @@ namespace Core {
             }
         }
 #else
-        FindChildren(_pids, [=](const uint32_t foundparentPID, const uint32_t) {
+#ifndef __APPLE__
+        FindChildren(_pids, [=](const pid_t foundparentPID, const pid_t) {
             return parentPID == foundparentPID;
         });
+#endif
 #endif
 
         Reset();
@@ -339,8 +343,18 @@ namespace Core {
 #endif
     {
     }
+
+    // Move Info
+    ProcessInfo::ProcessInfo(ProcessInfo&& move)
+        : _pid(std::move(move._pid))
+        , _memory(std::move(move._memory))
+#ifdef __WINDOWS__
+        , _handle(std::move(move._handle))
+#endif
+    {
+    }
     // Specifice Process Info
-    ProcessInfo::ProcessInfo(const process_t id)
+    ProcessInfo::ProcessInfo(const pid_t id)
         : _pid(id)
         , _memory(id)
 #ifdef __WINDOWS__
@@ -374,6 +388,21 @@ namespace Core {
         _handle = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, _pid);
 #endif
 
+        return (*this);
+    }
+    ProcessInfo& ProcessInfo::operator=(ProcessInfo&& move)
+    {
+        if (this != &move) {
+            _pid = std::move(move._pid);
+            _memory = std::move(move._memory);
+
+#ifdef __WINDOWS__
+            if (_handle) {
+                CloseHandle(_handle);
+            }
+            _handle = std::move(move._handle);
+#endif
+        }
         return (*this);
     }
     uint64_t ProcessInfo::Allocated() const
@@ -478,15 +507,17 @@ namespace Core {
         return (Core::File::FileName(ExecutableName(_pid)));
 #endif
     }
-    void ProcessInfo::Name(const string& name)
+    void ProcessInfo::Name(const string& name VARIABLE_IS_NOT_USED)
     {
 #ifdef __WINDOWS__
         if (GetCurrentProcessId() == _pid) {
         }
 #else
-        if (static_cast<uint32_t>(::getpid()) == _pid) {
+#ifndef __APPLE__ //No straight forward way to set process name in OSX
+        if (::getpid() == _pid) {
             prctl(PR_SET_NAME, name.c_str(), 0, 0, 0, 0);
         }
+#endif
 #endif
     }
     string ProcessInfo::Executable() const
@@ -502,7 +533,7 @@ namespace Core {
     std::list<string> ProcessInfo::CommandLine() const
     {
         char procPath[PATH_MAX];
-        sprintf(procPath, "/proc/%u/cmdline", _pid);
+        snprintf(procPath, sizeof(procPath), "/proc/%u/cmdline", _pid);
 
         std::list<string> output;
 
@@ -550,10 +581,10 @@ namespace Core {
     }
 #endif
 
-    /* static */ void ProcessInfo::FindByName(const string& name, const bool exact, std::list<ProcessInfo>& processInfos)
+    /* static */ void ProcessInfo::FindByName(const string& name VARIABLE_IS_NOT_USED, const bool exact VARIABLE_IS_NOT_USED, std::list<ProcessInfo>& processInfos VARIABLE_IS_NOT_USED)
     {
-#ifndef __WINDOWS__
-        std::list<uint32_t> pidList;
+#if !defined(__WINDOWS__) && !defined(__APPLE__)
+        std::list<pid_t> pidList;
         FindPid(name, exact, pidList);
 
         processInfos.clear();
@@ -592,17 +623,17 @@ namespace Core {
         return (result);
     }
 
-    void ProcessCurrent::SupplementryGroups(const string& userName)
+    void ProcessCurrent::SupplementryGroups(const string& userName VARIABLE_IS_NOT_USED)
     {
-#ifndef __WINDOWS__
+#if !defined(__WINDOWS__) && !defined(__APPLE__)
         struct passwd* pwd = getpwnam(userName.c_str());
         if (pwd != nullptr) {
             int numberOfGroups = 0;
 
             // Collect number of groups in which this user added
             getgrouplist(pwd->pw_name, pwd->pw_gid, nullptr, &numberOfGroups);
-            gid_t groups[numberOfGroups];
-            memset(groups, 0, sizeof(groups));
+            gid_t* groups = static_cast<gid_t*>(ALLOCA(sizeof(gid_t) * numberOfGroups));
+            memset(groups, 0, (sizeof(gid_t) * numberOfGroups));
 
             // Collect actual groups details
             getgrouplist(pwd->pw_name, pwd->pw_gid, groups, &numberOfGroups);
@@ -655,34 +686,34 @@ namespace Core {
         EnumerateChildProcesses(processInfo, _processes);
     }
 
-    bool ProcessTree::ContainsProcess(ThreadId pid) const
+    bool ProcessTree::ContainsProcess(thread_id pid) const
     {
 PUSH_WARNING(DISABLE_WARNING_CONVERSION_TO_GREATERSIZE)
-        auto comparator = [pid](const ProcessInfo& processInfo) { return ((ThreadId)(processInfo.Id()) == pid); };
+        auto comparator = [pid](const ProcessInfo& processInfo) { return ((thread_id)(processInfo.Id()) == pid); };
 POP_WARNING()
         std::list<ProcessInfo>::const_iterator i = std::find_if(_processes.cbegin(), _processes.cend(), comparator);
         return (i != _processes.cend());
     }
 
-    void ProcessTree::GetProcessIds(std::list<ThreadId>& processIds) const
+    void ProcessTree::GetProcessIds(std::list<thread_id>& processIds) const
     {
         processIds.clear();
 
         for (const ProcessInfo& process : _processes) {
 PUSH_WARNING(DISABLE_WARNING_CONVERSION_TO_GREATERSIZE)
-            processIds.push_back((ThreadId)(process.Id()));
+            processIds.push_back((thread_id)(process.Id()));
 POP_WARNING()
         }
     }
 
-    ThreadId ProcessTree::RootId() const
+    thread_id ProcessTree::RootId() const
     {
 PUSH_WARNING(DISABLE_WARNING_CONVERSION_TO_GREATERSIZE)
-        return (ThreadId)(_processes.front().Id());
+        return (thread_id)(_processes.front().Id());
 POP_WARNING()
     }
 
-    ProcessInfo::Memory::Memory(const process_t pid)
+    ProcessInfo::Memory::Memory(const pid_t pid)
         : _pid(pid)
         , _uss(0)
         , _pss(0)
@@ -702,6 +733,20 @@ POP_WARNING()
     {
     }
 
+    ProcessInfo::Memory::Memory(ProcessInfo::Memory&& move)
+        : _pid(std::move(move._pid))
+        , _uss(move._uss)
+        , _pss(move._pss)
+        , _rss(move._rss)
+        , _vss(move._vss)
+        , _shared(move._shared)
+    {
+        move._uss = 0;
+        move._rss = 0;
+        move._vss = 0;
+        move._shared = 0;
+    }
+
     ProcessInfo::Memory& ProcessInfo::Memory::operator=(const ProcessInfo::Memory& other)
     {
         if (&other == this) {
@@ -711,7 +756,26 @@ POP_WARNING()
         _uss = 0;
         _pss = 0;
         _rss = 0;
+        _vss = 0;
         _shared = 0;
+        return *this;
+    }
+
+    ProcessInfo::Memory& ProcessInfo::Memory::operator=(ProcessInfo::Memory&& move)
+    {
+        if (this != &move) {
+            _pid = std::move(move._pid);
+            _uss = move._uss;
+            _pss = move._pss;
+            _rss = move._rss;
+            _vss = move._vss;
+            _shared = move._shared;
+
+            move._uss = 0;
+            move._rss = 0;
+            move._vss = 0;
+            move._shared = 0;
+        }
         return *this;
     }
 

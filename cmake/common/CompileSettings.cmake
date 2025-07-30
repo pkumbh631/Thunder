@@ -64,6 +64,10 @@ endif()
 
 target_compile_options(CompileSettings INTERFACE -std=c++11 -Wno-psabi)
 
+if(BUILD_SHARED_LIBS)
+    target_compile_definitions(CompileSettings INTERFACE BUILD_SHARED_LIBS)
+endif()
+
 #
 # Build type specific options
 #
@@ -75,12 +79,14 @@ if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
 
 elseif("${CMAKE_BUILD_TYPE}" STREQUAL "DebugOptimized")
     target_compile_definitions(CompileSettings INTERFACE _THUNDER_DEBUG)
+    target_compile_definitions(CompileSettings INTERFACE _THUNDER_DEBUG_OPTIMIZED)
     target_compile_definitions(CompileSettings INTERFACE _THUNDER_CALLSTACK_INFO)
     target_compile_options(CompileSettings INTERFACE -funwind-tables)
     set(CONFIG_DIR "DebugOptimized" CACHE STRING "Build config directory" FORCE)
 
 elseif("${CMAKE_BUILD_TYPE}" STREQUAL "RelWithDebInfo")
     target_compile_definitions(CompileSettings INTERFACE _THUNDER_NDEBUG)
+    target_compile_definitions(CompileSettings INTERFACE _THUNDER_NDEBUG_DEB_INFO)
     target_compile_definitions(CompileSettings INTERFACE _THUNDER_CALLSTACK_INFO)
     target_compile_options(CompileSettings INTERFACE -funwind-tables)
     set(CONFIG_DIR "RelWithDebInfo" CACHE STRING "Build config directory" FORCE)

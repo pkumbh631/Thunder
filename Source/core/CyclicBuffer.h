@@ -34,7 +34,7 @@
 
 // ---- Helper types and constants ----
 
-namespace WPEFramework {
+namespace Thunder {
 
 namespace Core {
     // Rationale:
@@ -94,6 +94,8 @@ namespace Core {
 
             uint32_t GetCompleteTail(uint32_t offset) const
             {
+                ASSERT(_Parent._administration->_tailIndexMask < static_cast<uint32_t>(~0));
+
                 uint32_t oldTail = _Tail;
                 uint32_t roundCount = oldTail / (1 + _Parent._administration->_tailIndexMask);
                 oldTail &= _Parent._administration->_tailIndexMask;
@@ -169,7 +171,7 @@ namespace Core {
         {
             return (_buffer.Group(groupName));
         }
-        inline uint32_t Permission(uint32_t mode) const
+        inline uint32_t Permission(uint16_t mode) const
         {
             return (_buffer.Permission(mode));
         }
@@ -177,7 +179,7 @@ namespace Core {
         {
             return ((std::atomic_load(&(_administration->_state)) & LOCKED) == LOCKED);
         }
-        inline uint32_t LockPid() const
+        inline pid_t LockPid() const
         {
             return (_administration->_lockPID);
         }
@@ -211,7 +213,8 @@ namespace Core {
         {
             return (_administration->_size);
         }        
-        bool Validate();
+        bool Open();
+        void Close();
       
         // THREAD SAFE
         // If there are threads blocked in the Lock, they can be relinquised by
@@ -246,6 +249,11 @@ namespace Core {
         virtual void DataAvailable();
 
     protected:
+        inline bool Unlink()
+        {
+            _administration = nullptr;
+            return (_buffer.Unlink());
+        }
         inline bool Destroy()
         {
             _administration = nullptr;
@@ -308,16 +316,12 @@ namespace Core {
             std::atomic<uint32_t> _agents;
             std::atomic<uint16_t> _state;
             uint32_t _size;
-            uint32_t _lockPID;
+            pid_t _lockPID;
 
             // Keeps track of how much has been reserved for writing and by whom.
             uint32_t _reserved; // How much reserved in total.
             uint32_t _reservedWritten; // How much has already been written.
-#ifndef __WINDOWS__
             std::atomic<pid_t> _reservedPID; // What process made the reservation.
-#else
-            std::atomic<DWORD> _reservedPID; // What process made the reservation.
-#endif
 
         } * _administration;
     };

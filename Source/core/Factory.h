@@ -25,7 +25,7 @@
 #include "Portability.h"
 #include "Proxy.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
     template <typename BASEOBJECT, typename IDENTIFIER>
     class FactoryType {
@@ -85,6 +85,15 @@ namespace Core {
                 , _index(_map.begin())
                 , _start(true)
             {
+            }
+            Iterator(Iterator&& move)
+                : _map(move._map.begin(), move._map.end())
+                , _index(move._index.begin(), move._index.end())
+                , _start(move._start)
+            {
+                move._map.clear();
+                move._index.clear();
+                move._start = true;
             }
             ~Iterator() = default;
 
@@ -182,10 +191,9 @@ namespace Core {
         void CreateFactory(const uint32_t initialQueueSize)
         {
             IDENTIFIER label(ACTUALELEMENT::Id());
-            typename std::map<IDENTIFIER, IFactory*>::iterator index(_receptors.find(label));
 
             // Do not insert the same identifier twice !!!!
-            ASSERT(index == _receptors.end());
+            ASSERT(_receptors.find(label) == _receptors.end());
 
             _receptors.insert(std::pair<IDENTIFIER, IFactory*>(label, new InternalFactoryType<ACTUALELEMENT>(initialQueueSize)));
         }

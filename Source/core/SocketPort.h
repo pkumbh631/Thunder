@@ -45,7 +45,7 @@
 #include <sys/types.h>
 #endif
 
-namespace WPEFramework {
+namespace Thunder {
     namespace Core {
         class EXTERNAL SocketPort : public IResource {
         private:
@@ -180,11 +180,11 @@ namespace WPEFramework {
             }
             inline string LocalId() const
             {
-                return (m_LocalNode.HostAddress());
+                return (Identifier(m_LocalNode));
             }
             inline string RemoteId() const
             {
-                return (m_RemoteNode.HostAddress());
+                return (Identifier(m_RemoteNode));
             }
             inline const NodeId& ReceivedNode() const
             {
@@ -250,23 +250,35 @@ namespace WPEFramework {
             NodeId Accept();
             void Listen();
             SOCKET Accept(NodeId& remoteId);
+            IResource::handle Descriptor() const override
+            {
+                return (static_cast<IResource::handle>(m_Socket));
+            }
 
         protected:
             virtual uint32_t Initialize();
             virtual int32_t Read(uint8_t buffer[], const uint16_t length) const;
             virtual int32_t Write(const uint8_t buffer[], const uint16_t length);
+            void SetError() {
+                m_State |= SocketPort::EXCEPTION;
+            }
+            void Lock() const {
+                m_syncAdmin.Lock();
+            }
+            void Unlock() const {
+                m_syncAdmin.Unlock();
+            }
 
         private:
-            virtual IResource::handle Descriptor() const override
-            {
-                return (static_cast<IResource::handle>(m_Socket));
-            }
+            string Identifier(const NodeId& node) const;
             inline uint32_t SocketMode() const
             {
                 return (((m_SocketType == LISTEN) || (m_SocketType == STREAM)) ? SOCK_STREAM : ((m_SocketType == DATAGRAM) ? SOCK_DGRAM : (m_SocketType == SEQUENCED ? SOCK_SEQPACKET : SOCK_RAW)));
             }
-            virtual uint16_t Events() override;
-            virtual void Handle(const uint16_t events) override;
+            uint16_t Events() override;
+PUSH_WARNING(DISABLE_WARNING_OVERLOADED_VIRTUALS)
+            void Handle(const uint16_t events) override;
+POP_WARNING()
             bool Closed();
             void Opened();
             void Accepted();
@@ -347,14 +359,6 @@ namespace WPEFramework {
             }
 
             ~SocketStream() override = default;
-
-        public:
-            // Methods to extract and insert data into the socket buffers
-            virtual uint16_t SendData(uint8_t* dataFrame, const uint16_t maxSendSize) = 0;
-            virtual uint16_t ReceiveData(uint8_t* dataFrame, const uint16_t receivedSize) = 0;
-
-            // Signal a state change, Opened, Closed or Accepted
-            virtual void StateChange() = 0;
         };
 
         class EXTERNAL SocketDatagram : public SocketPort {
@@ -387,14 +391,6 @@ namespace WPEFramework {
             ~SocketDatagram() override
             {
             }
-
-        public:
-            // Methods to extract and insert data into the socket buffers
-            virtual uint16_t SendData(uint8_t* dataFrame, const uint16_t maxSendSize) = 0;
-            virtual uint16_t ReceiveData(uint8_t* dataFrame, const uint16_t receivedSize) = 0;
-
-            // Signal a state change, Opened, Closed or Accepted
-            virtual void StateChange() = 0;
         };
 
         class EXTERNAL SocketListner {
@@ -425,21 +421,21 @@ namespace WPEFramework {
                 {
                     SocketPort::LocalNode(localNode);
                 }
-                virtual uint16_t SendData(uint8_t* /* dataFrame */, const uint16_t /* maxSendSize */)
+                uint16_t SendData(uint8_t* /* dataFrame */, const uint16_t /* maxSendSize */) override
                 {
                     // This should not happen on this socket !!!!!
                     ASSERT(false);
 
                     return (0);
                 }
-                virtual uint16_t ReceiveData(uint8_t* /* dataFrame */, const uint16_t /* receivedSize */)
+                uint16_t ReceiveData(uint8_t* /* dataFrame */, const uint16_t /* receivedSize */) override
                 {
                     // This should not happen on this socket !!!!!
                     ASSERT(false);
 
                     return (0);
                 }
-                virtual void StateChange()
+                void StateChange() override
                 {
                     SOCKET newClient;
                     NodeId remoteId;

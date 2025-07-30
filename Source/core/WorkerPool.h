@@ -23,7 +23,7 @@
 #include "ThreadPool.h"
 #include "Timer.h"
 
-namespace WPEFramework {
+namespace Thunder {
 
 namespace Core {
 
@@ -35,9 +35,11 @@ namespace Core {
         public:
             JobType(const JobType<IMPLEMENTATION>&) = delete;
             JobType<IMPLEMENTATION>& operator=(const JobType<IMPLEMENTATION>&) = delete;
+            JobType(JobType<IMPLEMENTATION>&&) = delete;
+            JobType<IMPLEMENTATION>& operator=(JobType<IMPLEMENTATION>&&) = delete;
 
             template <typename... Args>
-            JobType(Args&&... args)
+            explicit JobType(Args&&... args)
                 : ThreadPool::JobType<IMPLEMENTATION>(std::forward<Args>(args)...)
             {
             }
@@ -102,7 +104,7 @@ namespace Core {
         static IWorkerPool& Instance();
         static bool IsAvailable();
 
-        virtual ::ThreadId Id(const uint8_t index) const = 0;
+        virtual thread_id Id(const uint8_t index) const = 0;
         virtual void Submit(const Core::ProxyType<IDispatch>& job) = 0;
         virtual void Schedule(const Core::Time& time, const Core::ProxyType<IDispatch>& job) = 0;
         virtual bool Reschedule(const Core::Time& time, const Core::ProxyType<IDispatch>& job) = 0;
@@ -126,14 +128,18 @@ namespace Core {
                 , _pool(copy._pool)
             {
             }
+            Timer(Timer&& move) noexcept
+                : _job(std::move(move._job))
+                , _pool(move._pool)
+            {
+                move._pool = nullptr;
+            }
             Timer(IWorkerPool* pool, const ProxyType<IDispatch>& job)
                 : _job(job)
                 , _pool(pool)
             {
             }
-            ~Timer()
-            {
-            }
+            ~Timer() = default;
 
         public:
             bool operator==(const Timer& RHS) const
@@ -380,9 +386,9 @@ POP_WARNING()
             _external.Process();
             _joined = 0;
         }
-        ::ThreadId Id(const uint8_t index) const override
+        thread_id Id(const uint8_t index) const override
         {
-            ::ThreadId result = (::ThreadId)(~0);
+            thread_id result = (thread_id)(~0);
 
             if (index == 0) {
                 result = _timer.ThreadId();
@@ -394,7 +400,7 @@ POP_WARNING()
 
             return (result);
         }
-        const Metadata& Snapshot() const
+        const Metadata& Snapshot() const override
         {
             _metadata.Slot[0].WorkerId = _timer.ThreadId();
             _metadata.Slot[0].Runs = _timer.Pending();
@@ -427,7 +433,7 @@ POP_WARNING()
         ThreadPool::Minion _external;
         Core::TimerType<Timer> _timer;
         mutable Metadata _metadata;
-        ::ThreadId _joined;
+        thread_id _joined;
         #ifdef __CORE_WARNING_REPORTING__
         DispatchedJobMonitor _dispatchedJobMonitor;
         #endif

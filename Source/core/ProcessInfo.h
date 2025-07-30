@@ -23,11 +23,10 @@
 #include "IIterator.h"
 #include "Portability.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
 
-    // On 64 bits deployments, this is probably a uint64_t, lets prepare for it :-)
-    using process_t = uint32_t;
+    typedef DEPRECATED pid_t process_t;
 
     class EXTERNAL ProcessInfo {
     public:
@@ -58,11 +57,13 @@ namespace Core {
     private:
         class Memory {
         public:
-            explicit Memory(const process_t pid);
+            explicit Memory(const pid_t pid);
             ~Memory() = default;
 
             Memory(const Memory&);
+            Memory(Memory&&);
             Memory& operator=(const Memory&);
+            Memory& operator=(Memory&&);
 
         public:
             void MemoryStats();
@@ -88,7 +89,7 @@ namespace Core {
             }
 
         private:
-            process_t _pid;
+            pid_t _pid;
 
             uint64_t _uss;
             uint64_t _pss;
@@ -107,16 +108,23 @@ namespace Core {
             Iterator(const string& parentname, const string& childname, const bool removepath);
 
             // Get the Child Processes with a name name from a Parent pid
-            Iterator(const process_t parentPID, const string& childname, const bool removepath);
+            Iterator(const pid_t parentPID, const string& childname, const bool removepath);
 
             // Get the Children of the given PID.
-            Iterator(const process_t parentPID);
+            Iterator(const pid_t parentPID);
 
             Iterator(const Iterator& copy)
                 : _pids(copy._pids)
                 , _current(copy._current)
                 , _index(copy._index)
             {
+            }
+            Iterator(Iterator&& move) noexcept
+                : _pids(std::move(move._pids))
+                , _current(std::move(move._current))
+                , _index(move._index)
+            {
+                move._index = 0;
             }
             ~Iterator()
             {
@@ -131,15 +139,32 @@ namespace Core {
                 return (*this);
             }
 
+            Iterator& operator=(Iterator&& move) noexcept
+            {
+                if (this != &move) {
+                    _pids = std::move(move._pids);
+                    _current = std::move(move._current);
+                    _index = move._index;
+
+                    move._index = 0;
+                }
+                return (*this);
+            }
+
         public:
             inline bool IsValid() const
             {
                 return ((_index != 0) && (_index <= _pids.size()));
             }
-            inline void Reset()
+            inline void Reset(bool start = true)
             {
-                _index = 0;
-                _current = _pids.begin();
+                if (start) {
+                    _index = 0;
+                    _current = _pids.begin();
+                } else {
+                    _index = static_cast<uint32_t>(_pids.size()) + 1;
+                    _current = _pids.end();
+                }
             }
             bool Next()
             {
@@ -151,6 +176,17 @@ namespace Core {
                     }
                 }
                 return (_index <= _pids.size());
+            }
+            bool Previous()
+            {
+                if (_index > 0) {
+                    _index--;
+
+                    if (_index > 0) {
+                        _current--;
+                    }
+                }
+                return (_index > 0);
             }
             inline ProcessInfo Current() const
             {
@@ -164,8 +200,8 @@ namespace Core {
             }
 
         private:
-            std::list<process_t> _pids;
-            std::list<process_t>::iterator _current;
+            std::list<pid_t> _pids;
+            std::list<pid_t>::iterator _current;
             uint32_t _index;
         };
 
@@ -174,15 +210,17 @@ namespace Core {
         ProcessInfo();
 
         // Specifice Process Info
-        ProcessInfo(const process_t id);
+        ProcessInfo(const pid_t id);
 
         ProcessInfo(const ProcessInfo&);
+        ProcessInfo(ProcessInfo&&);
         ProcessInfo& operator=(const ProcessInfo&);
+        ProcessInfo& operator=(ProcessInfo&&);
 
         ~ProcessInfo();
 
     public:
-        inline process_t Id() const
+        inline pid_t Id() const
         {
             return (_pid);
         }
@@ -343,7 +381,7 @@ namespace Core {
         }
 
     private:
-        process_t _pid;
+        pid_t _pid;
         mutable Memory _memory;
 #ifdef __WINDOWS__
         HANDLE _handle;
@@ -375,14 +413,14 @@ namespace Core {
     public:
         explicit ProcessTree(const ProcessInfo& processInfo);
 
-        bool ContainsProcess(ThreadId pid) const;
-        void GetProcessIds(std::list<ThreadId>& processIds) const;
-        ThreadId RootId() const;
+        bool ContainsProcess(thread_id pid) const;
+        void GetProcessIds(std::list<thread_id>& processIds) const;
+        thread_id RootId() const;
 
     private:
         std::list<ProcessInfo> _processes;
     };
 
 } // namespace Core
-} // namespace WPEFramework
+} // namespace Thunder
 

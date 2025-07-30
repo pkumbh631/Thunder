@@ -24,9 +24,14 @@
 #include "TraceFactory.h"
 #include "DirectOutput.h"
 
-namespace WPEFramework {
+namespace Thunder {
 
     namespace Messaging {
+
+        template <const Core::Messaging::Metadata::type TYPE>
+        using BaseCategoryType = Core::Messaging::BaseCategoryType<TYPE>;
+
+        using TextMessage = Core::Messaging::TextMessage;
 
         /**
         * @brief Class responsible for:
@@ -37,8 +42,16 @@ namespace WPEFramework {
         */
         class EXTERNAL MessageUnit : public Core::Messaging::IStore {
         public:
-            static constexpr uint32_t MetadataSize = 10 * 1024;
-            static constexpr uint32_t DataSize = 20 * 1024;
+            static constexpr uint16_t MetadataBufferSize = 4 * 1024;
+            static constexpr uint16_t TempMetadataBufferSize = 128;
+            static constexpr uint16_t MaxDataBufferSize = 63 * 1024;
+            static constexpr uint16_t TempDataBufferSize = 8 * 1024;
+
+            enum metadataFrameProtocol : uint8_t {
+                UPDATE      = 0,
+                CONTROLS    = 1,
+                MODULES     = 2
+            };
 
             enum flush : uint8_t {
                 OFF                = 0,
@@ -46,36 +59,57 @@ namespace WPEFramework {
                 FLUSH_ABBREVIATED  = 2
             };
 
+            class EXTERNAL Buffer : public Core::IPC::BufferType<static_cast<uint16_t>(~0)> {
+            public:
+                Buffer()
+                    : Core::IPC::BufferType<static_cast<uint16_t>(~0)>(MetadataBufferSize)
+                {
+                }
+                ~Buffer() = default;
+
+                Buffer(const Buffer&) = delete;
+                Buffer& operator=(const Buffer&) = delete;
+            };
+
+            using MetadataFrame = Core::IPCMessageType<1, Buffer, Buffer>;
+
             /**
              * @brief Class responsible for maintaining the state of a specific Message module/category known to
              *        the system..
              */
             class EXTERNAL Control : public Core::Messaging::Metadata {
             public:
-                Control& operator= (const Control& copy) = delete;
+                Control& operator=(const Control& copy) = delete;
 
                 Control()
                     : Core::Messaging::Metadata()
-                    , _enabled(false) {
+                    , _enabled(false)
+                {
                 }
                 Control(const Metadata& info, const bool enabled)
                     : Core::Messaging::Metadata(info)
-                    , _enabled(enabled) {
+                    , _enabled(enabled)
+                {
                 }
-                Control(Control&& rhs)
+                Control(Control&& rhs) noexcept
                     : Core::Messaging::Metadata(rhs)
-                    , _enabled(rhs._enabled) {
+                    , _enabled(rhs._enabled)
+                {
                 }
                 Control(const Control& copy)
                     : Core::Messaging::Metadata(copy)
-                    , _enabled(copy._enabled) {
+                    , _enabled(copy._enabled)
+                {
                 }
                 ~Control() = default;
 
-                Control& operator= (Control&& rhs) {
-                    Core::Messaging::Metadata::operator=(rhs);
-                    _enabled = rhs._enabled;
-
+                Control& operator=(Control&& move) noexcept
+                {
+                    if (this != &move) {
+                        Core::Messaging::Metadata::operator=(move);
+                        _enabled = move._enabled;
+                        move._enabled = false;
+                    }
                     return (*this);
                 }
 
@@ -83,7 +117,9 @@ namespace WPEFramework {
                 bool Enabled() const {
                     return (_enabled);
                 }
-                uint16_t Serialize(uint8_t buffer[], const uint16_t bufferSize) const {
+                
+                uint16_t Serialize(uint8_t buffer[], const uint16_t bufferSize) const
+                {
                     uint16_t length = Metadata::Serialize(buffer, bufferSize);
 
                     if ((length == 0) || (length >= bufferSize)) {
@@ -96,7 +132,9 @@ namespace WPEFramework {
 
                     return (length);
                 }
-                uint16_t Deserialize(const uint8_t buffer[], const uint16_t bufferSize) {
+                
+                uint16_t Deserialize(const uint8_t buffer[], const uint16_t bufferSize)
+                {
                     uint16_t length = Metadata::Deserialize(buffer, bufferSize);
 
                     if ((length == 0) || (length >= bufferSize)) {
@@ -113,37 +151,43 @@ namespace WPEFramework {
             private:
                 bool _enabled;
             };
+
             using ControlList = std::vector<Control>;
             class EXTERNAL Iterator {
             public:
                 Iterator(const Iterator&) = delete;
-                Iterator& operator= (const Iterator&) = delete;
+                Iterator& operator=(const Iterator&) = delete;
 
                 Iterator()
                     : _position(0)
                     , _container()
-                    , _index() {
+                    , _index()
+                {
                 }
                 Iterator(const ControlList& copy)
                     : _position(0)
                     , _container(copy)
-                    , _index(_container.begin()) {
+                    , _index(_container.begin())
+                {
                 }
-                Iterator(Iterator&& move)
+                Iterator(Iterator&& move) noexcept
                     : _position(0)
-                    , _container(move._container)
-                    , _index(_container.begin()) {
+                    , _container(std::move(move._container))
+                    , _index(_container.begin())
+                {
                 }
                 ~Iterator() = default;
 
-                Iterator& operator= (Iterator&& rhs) {
+                Iterator& operator=(Iterator&& rhs) noexcept
+                {
                     _position = 0;
                     _container = std::move(rhs._container);
                     _index = _container.begin();
 
                     return (*this);
                 }
-                Iterator& operator= (ControlList&& rhs) {
+                Iterator& operator=(ControlList&& rhs) noexcept
+                {
                     _position = 0;
                     _container = std::move(rhs);
                     _index = _container.begin();
@@ -155,11 +199,15 @@ namespace WPEFramework {
                 bool IsValid() const {
                     return ((_position > 0) && (_index != _container.end()));
                 }
-                void Reset() {
+
+                void Reset()
+                {
                     _position = 0;
                     _index = _container.begin();
                 }
-                bool Next() {
+
+                bool Next()
+                {
                     if (_position == 0) {
                         _position++;
                     }
@@ -170,20 +218,32 @@ namespace WPEFramework {
 
                     return (_index != _container.end());
                 }
-                Core::Messaging::Metadata::type Type() const {
+
+                Core::Messaging::Metadata::type Type() const
+                {
                     ASSERT(IsValid());
+
                     return (_index->Type());
                 }
-                const string& Module() const {
+
+                const string& Module() const
+                {
                     ASSERT(IsValid());
+
                     return (_index->Module());
                 }
-                const string& Category() const {
+
+                const string& Category() const
+                {
                     ASSERT(IsValid());
+
                     return (_index->Category());
                 }
-                bool Enabled() const {
+
+                bool Enabled() const
+                {
                     ASSERT(IsValid());
+                    
                     return (_index->Enabled());
                 }
 
@@ -192,28 +252,35 @@ namespace WPEFramework {
                 ControlList _container;
                 ControlList::iterator _index;
             };
+
             class EXTERNAL Settings {
             private:
                 static constexpr const TCHAR* MESSAGE_DISPATCHER_CONFIG_ENV = _T("MESSAGE_DISPATCHER_CONFIG");
                 static constexpr const TCHAR  DELIMITER = '|';
 
                 enum mode : uint8_t {
-                    BACKGROUND   = 0x01,
-                    DIRECT       = 0x02,
-                    ABBREVIATED  = 0x04
+                    BACKGROUND     = 0x01,
+                    DIRECT         = 0x02,
+                    ABBREVIATED    = 0x04,
+                    REDIRECT_OUT   = 0x08,
+                    REDIRECT_ERROR = 0x10
                 };
 
+            public:
                 /**
                  * @brief JSON Settings for all messages
                  */
-                class Config : public Core::JSON::Container {
-                private:
-                    class TracingSection : public Core::JSON::Container {
-                    private:
+                class EXTERNAL Config : public Core::JSON::Container {
+                public:
+                    class Section : public Core::JSON::Container {
+                    public:
                         class Entry : public Core::JSON::Container {
                         public:
                             Entry()
                                 : Core::JSON::Container()
+                                , Module()
+                                , Category()
+                                , Enabled(false)
                             {
                                 Add(_T("module"), &Module);
                                 Add(_T("category"), &Category);
@@ -226,13 +293,38 @@ namespace WPEFramework {
                                 Category = category;
                                 Enabled = enabled;
                             }
-                            Entry(const Entry& other)
-                                : Entry()
+                            Entry(Entry&& other) noexcept
+                                : Core::JSON::Container()
+                                , Module(std::move(other.Module))
+                                , Category(std::move(other.Category))
+                                , Enabled(std::move(other.Enabled))
                             {
-                                Module = other.Module;
-                                Category = other.Category;
-                                Enabled = other.Enabled;
+                                Add(_T("module"), &Module);
+                                Add(_T("category"), &Category);
+                                Add(_T("enabled"), &Enabled);
                             }
+                            Entry(const Entry& other)
+                                : Core::JSON::Container()
+                                , Module(other.Module)
+                                , Category(other.Category)
+                                , Enabled(other.Enabled)
+                            {
+                                Add(_T("module"), &Module);
+                                Add(_T("category"), &Category);
+                                Add(_T("enabled"), &Enabled);
+                            }
+
+                            Entry& operator=(Entry&& other) noexcept
+                            {
+                                if (&other != this) {
+                                    Module = std::move(other.Module);
+                                    Category = std::move(other.Category);
+                                    Enabled = std::move(other.Enabled);
+                                }
+                                
+                                return (*this);
+                            }
+ 
                             Entry& operator=(const Entry& other)
                             {
                                 if (&other != this) {
@@ -240,6 +332,7 @@ namespace WPEFramework {
                                     Category = other.Category;
                                     Enabled = other.Enabled;
                                 }
+                                
                                 return (*this);
                             }
                             ~Entry() = default;
@@ -251,33 +344,22 @@ namespace WPEFramework {
                         };
 
                     public:
-                        TracingSection()
+                        Section(Section&& other) = delete;
+                        Section(const Section& other) = delete;
+                        Section& operator=(Section&& other) = delete;
+                        Section& operator=(const Section& other) = delete;
+
+                        Section()
                             : Core::JSON::Container()
                             , Settings()
-                        {
+                            , Abbreviated(true) {
                             Add(_T("settings"), &Settings);
+                            Add(_T("abbreviated"), &Abbreviated);
                         }
-                        ~TracingSection() = default;
-                        TracingSection(const TracingSection& other) = delete;
-                        TracingSection& operator=(const TracingSection& other) = delete;
+                        ~Section() = default;
 
                     public:
                         Core::JSON::ArrayType<Entry> Settings;
-                    };
-
-                    class LoggingSection : public TracingSection {
-                    public:
-                        LoggingSection()
-                            : TracingSection()
-                            , Abbreviated(true)
-                        {
-                            Add(_T("abbreviated"), &Abbreviated);
-                        }
-                        ~LoggingSection() = default;
-                        LoggingSection(const LoggingSection& other) = delete;
-                        LoggingSection& operator=(const LoggingSection& other) = delete;
-
-                    public:
                         Core::JSON::Boolean Abbreviated;
                     };
 
@@ -286,17 +368,41 @@ namespace WPEFramework {
                         : Core::JSON::Container()
                         , Tracing()
                         , Logging()
+                        , Reporting()
+                        , Assertion()
+                        , Port(0)
+                        , Path(_T("MessageDispatcher"))
+                        , Flush(false)
+                        , Out(true)
+                        , Error(true)
+                        , DataSize(20 * 1024)
                     {
                         Add(_T("tracing"), &Tracing);
                         Add(_T("logging"), &Logging);
+                        Add(_T("reporting"), &Reporting);
+                        Add(_T("assertion"), &Assertion);
+                        Add(_T("path"), &Path);
+                        Add(_T("port"), &Port);
+                        Add(_T("flush"), &Flush);
+                        Add(_T("stdout"), &Out);
+                        Add(_T("stderr"), &Error);
+                        Add(_T("datasize"), &DataSize);
                     }
                     ~Config() = default;
                     Config(const Config& other) = delete;
                     Config& operator=(const Config& other) = delete;
 
                 public:
-                    TracingSection Tracing;
-                    LoggingSection Logging;
+                    Section Tracing;
+                    Section Logging;
+                    Section Reporting;
+                    Section Assertion;
+                    Core::JSON::DecUInt16 Port;
+                    Core::JSON::String Path;
+                    Core::JSON::Boolean Flush;
+                    Core::JSON::Boolean Out;
+                    Core::JSON::Boolean Error;
+                    Core::JSON::DecUInt16 DataSize;
                 };
 
             public:
@@ -309,7 +415,9 @@ namespace WPEFramework {
                     , _path()
                     , _identifier()
                     , _socketPort()
-                    , _mode()
+                    , _permission(0)
+                    , _mode(static_cast<mode>(0))
+                    , _dataSize()
                 {
                 }
                 ~Settings() = default;
@@ -318,33 +426,79 @@ namespace WPEFramework {
                 const string& BasePath() const {
                     return(_path);
                 }
+
                 const string& Identifier() const {
                     return (_identifier);
                 }
+
                 uint16_t SocketPort() const {
                     return (_socketPort);
                 }
+
+                uint16_t DataSize() const {
+                    return (_dataSize);
+                }
+
+                uint16_t Permission() const {
+                    return (_permission);
+                }
+
                 bool IsBackground() const {
                     return ((_mode & mode::BACKGROUND) != 0);
                 }
+
                 bool IsDirect() const {
                     return ((_mode & mode::DIRECT) != 0);
                 }
-                bool IsAbbreviated() const {
-                    return ((_mode & mode::ABBREVIATED) != 0);
+
+                bool HasRedirectedOut() const {
+                    return ((_mode & mode::REDIRECT_OUT) != 0);
                 }
-                void Configure (const string& path, const string& identifier, const uint16_t socketPort, const string& config, const bool background, const flush flushMode)
+
+                bool HasRedirectedError() const {
+                    return ((_mode & mode::REDIRECT_ERROR) != 0);
+                }
+
+                Core::Messaging::MessageInfo::abbreviate IsAbbreviated() const {
+                    Core::Messaging::MessageInfo::abbreviate abbreviate;
+
+                    if ((_mode & mode::ABBREVIATED) == 0) {
+                        abbreviate = Core::Messaging::MessageInfo::abbreviate::FULL;
+                    }
+                    else {
+                        abbreviate = Core::Messaging::MessageInfo::abbreviate::ABBREVIATED;
+                    }
+
+                    return (abbreviate);
+                }
+
+                void Configure(const string& basePath, const string& identifier, const Config& jsonParsed, const bool background, const flush flushMode)
                 {
                     _settings.clear();
-                    _path = path;
-                    _identifier = identifier;
-                    _socketPort = socketPort;
-                    _mode = (background ? mode::BACKGROUND : 0) | (flushMode != flush::OFF ? mode::DIRECT : 0) | (flushMode == FLUSH_ABBREVIATED ? mode::ABBREVIATED : 0);
+                    string messagingFolder;
+                    Core::ParsePathInfo(jsonParsed.Path.Value(), messagingFolder, _permission);
 
-                    Config jsonParsed;
-                    jsonParsed.FromString(config);
+                    _path = Core::Directory::Normalize(basePath) + messagingFolder;
+                    _identifier = identifier;
+                    _socketPort = jsonParsed.Port.Value();
+                    _mode = (background ? mode::BACKGROUND : 0) | 
+                            (((flushMode != flush::OFF) || (jsonParsed.Flush.Value())) ? mode::DIRECT : 0) | 
+                            (flushMode == flush::FLUSH_ABBREVIATED ? mode::ABBREVIATED : 0) |
+                            (jsonParsed.Error.Value() ? mode::REDIRECT_ERROR : 0) |
+                            (jsonParsed.Out.IsSet() ? (jsonParsed.Out.Value() ? mode::REDIRECT_OUT : 0) : (background ? mode::REDIRECT_OUT : 0));
+                    if (jsonParsed.DataSize.Value() > MaxDataBufferSize) {
+                        TRACE_L1("Data buffer size set in the config is too large! The maximum has been used instead");
+                        _dataSize = MaxDataBufferSize;
+
+                        ASSERT(false);
+                    }
+                    else {
+                        _dataSize = jsonParsed.DataSize.Value();
+                    }
+
                     FromConfig(jsonParsed);
                 }
+
                 /**
                  * @brief Based on new metadata, update a specific setting. If there is no match, add entry to the list
                  */
@@ -414,12 +568,14 @@ namespace WPEFramework {
 
                     return (result);
                 }
-                void Save() const {
+                void Save() const
+                {
                     // Store all config info..
                     string settings = _path + DELIMITER +
                                _identifier + DELIMITER +
                                Core::NumberType<uint16_t>(_socketPort).Text() + DELIMITER +
-                               Core::NumberType<uint8_t>(_mode).Text();
+                               Core::NumberType<uint8_t>(_mode & (mode::BACKGROUND|mode::DIRECT|mode::ABBREVIATED)).Text() + DELIMITER +
+                               Core::NumberType<uint16_t>(_dataSize).Text();
 
                     for (auto& entry : _settings) {
                         settings += DELIMITER + Core::NumberType<uint8_t>(entry.Type()).Text() +
@@ -430,7 +586,9 @@ namespace WPEFramework {
 
                     Core::SystemInfo::SetEnvironment(MESSAGE_DISPATCHER_CONFIG_ENV, settings, true);
                 }
-                void Load() {
+
+                void Load()
+                {
                     string settings;
                     Core::SystemInfo::GetEnvironment(MESSAGE_DISPATCHER_CONFIG_ENV, settings);
                     Core::TextSegmentIterator iterator(Core::TextFragment(settings, 0, static_cast<uint16_t>(settings.length())), false, DELIMITER);
@@ -439,6 +597,7 @@ namespace WPEFramework {
                     _identifier.clear();
                     _socketPort = 0;
                     _mode = 0;
+                    _dataSize = 0;
                     _settings.clear();
 
                     if (iterator.Next() == true) {
@@ -449,6 +608,9 @@ namespace WPEFramework {
                                 _socketPort = Core::NumberType<uint16_t>(iterator.Current()).Value();
                                 if (iterator.Next() == true) {
                                     _mode = Core::NumberType<uint8_t>(iterator.Current()).Value();
+                                    if (iterator.Next() == true) {
+                                        _dataSize = Core::NumberType<uint16_t>(iterator.Current()).Value();
+                                    }
                                 }
                             }
                         }
@@ -462,8 +624,7 @@ namespace WPEFramework {
                                 string category = iterator.Current().Text();
                                 if (iterator.Next() == true) {
                                     string enabled = iterator.Current().Text();
-
-                                    if ((type >= Core::Messaging::Metadata::type::TRACING) && (type <= Core::Messaging::Metadata::type::REPORTING) &&
+                                    if ((type >= Core::Messaging::Metadata::type::TRACING) && (type <= Core::Messaging::Metadata::type::ASSERT) &&
                                         (enabled.length() == 1) &&
                                         ((enabled[0] == '0') || (enabled[0] == '1'))) {
                                         _settings.emplace_back(Core::Messaging::Metadata(static_cast<Core::Messaging::Metadata::type>(type), category, module), (enabled[0] == '1'));
@@ -499,21 +660,46 @@ namespace WPEFramework {
                         }
                     }
 
+                    if (config.Reporting.IsSet() == true) {
+                        auto it = config.Reporting.Settings.Elements();
+                        while (it.Next() == true) {
+                            Core::Messaging::Metadata info(Core::Messaging::Metadata::type::REPORTING, it.Current().Category.Value(), it.Current().Module.Value());
+                            _settings.emplace_back(info, it.Current().Enabled.Value());
+                        }
+                    }
+
+                    if (config.Assertion.IsSet() == true) {
+                        auto it = config.Assertion.Settings.Elements();
+                        while (it.Next() == true) {
+                            Core::Messaging::Metadata info(Core::Messaging::Metadata::type::ASSERT, it.Current().Category.Value(), it.Current().Module.Value());
+                            _settings.emplace_back(info, it.Current().Enabled.Value());
+                        }
+                    }
+
                     _adminLock.Unlock();
                 }
+
                 void ToConfig(Config& config) const
                 {
                     config.Tracing.Settings.Clear();
                     config.Logging.Settings.Clear();
+                    config.Reporting.Settings.Clear();
+                    config.Assertion.Settings.Clear();
 
                     _adminLock.Lock();
 
                     for (auto it = _settings.crbegin(); it != _settings.crend(); ++it) {
                         if (it->Type() == Core::Messaging::Metadata::type::TRACING) {
-                            config.Tracing.Settings.Add({ it->Category(), it->Module(), it->Enabled() });
+                            config.Tracing.Settings.Add(Config::Section::Entry(it->Category(), it->Module(), it->Enabled()));
                         }
                         else if (it->Type() == Core::Messaging::Metadata::type::LOGGING) {
-                            config.Logging.Settings.Add({ it->Category(), it->Module(), it->Enabled() });
+                            config.Logging.Settings.Add(Config::Section::Entry(it->Category(), it->Module(), it->Enabled()));
+                        }
+                        else if (it->Type() == Core::Messaging::Metadata::type::REPORTING) {
+                            config.Reporting.Settings.Add(Config::Section::Entry(it->Category(), it->Module(), it->Enabled()));
+                        }
+                        else if (it->Type() == Core::Messaging::Metadata::type::ASSERT) {
+                            config.Assertion.Settings.Add(Config::Section::Entry(it->Category(), it->Module(), it->Enabled()));
                         }
                     }
 
@@ -526,25 +712,29 @@ namespace WPEFramework {
                 string _path;
                 string _identifier;
                 uint16_t _socketPort;
+                uint16_t _permission;
                 uint8_t _mode;
+                uint16_t _dataSize;
             };
-            class EXTERNAL Client : public MessageDataBufferType<DataSize, MetadataSize> {
+
+            class EXTERNAL Client : public MessageDataBuffer {
             private:
-                using BaseClass = MessageDataBufferType<DataSize, MetadataSize>;
+                using BaseClass = MessageDataBuffer;
 
             public:
                 Client() = delete;
+                Client(Client&&) = delete;
                 Client(const Client&) = delete;
-                Client& operator= (const Client&) = delete;
+                Client& operator=(Client&&) = delete;
+                Client& operator=(const Client&) = delete;
 
                 Client(const string& identifier, const uint32_t instanceId, const string& baseDirectory, const uint16_t socketPort = 0)
-                    : MessageDataBufferType < DataSize, MetadataSize>(identifier, instanceId, baseDirectory, socketPort, false)
-                    , _channel(Core::NodeId(MetadataName().c_str()), MetadataSize) {
-
+                    : MessageDataBuffer(identifier, instanceId, baseDirectory, MessageUnit::Instance().DataSize(), socketPort, false)
+                    , _channel(Core::NodeId(MetadataName().c_str()), MetadataBufferSize) {
                     _channel.Open(Core::infinite);
                 }
                 ~Client() {
-                    _channel.Close(Core::infinite);
+                    _channel.Close(100);
                 }
 
             public:
@@ -552,43 +742,65 @@ namespace WPEFramework {
                     return (_channel.IsOpen());
                 }
 
+                void Validate()
+                {
+                    if ((IsValid() == false) && (MessageDataBuffer::Validate() == true)) {
+                        _channel.Open(Core::infinite);
+                    }
+                }
+
                 /**
                  * @brief Exchanges metadata with the server. Reader needs to register for notifications to recevie this message.
-                 *        Passed buffer will be filled with data from thr other side
+                 *        Passed buffer will be filled with data from the other side
                  *
                  * @param length length of the message
                  * @param value buffer
                  * @param maxLength maximum size of the buffer
                  * @return uint16_t how much data was written back to the buffer
                  */
-                uint32_t Update(const uint32_t waitTime, const Core::Messaging::Metadata& control, const bool enabled) {
+                uint32_t Update(const uint32_t waitTime, const Core::Messaging::Metadata& control, const bool enabled)
+                {
                     uint32_t result = Core::ERROR_ILLEGAL_STATE;
 
                     if (_channel.IsOpen() == true) {
 
-                        uint8_t dataBuffer[MetadataSize];
+                        uint8_t dataBuffer[TempMetadataBufferSize];
 
                         // We got a connection to the spawned process side, get the list of traces from
                         // there and send our settings from here...
-                        Core::ProxyType<BaseClass::MetadataFrame> metaDataFrame(Core::ProxyType<BaseClass::MetadataFrame>::Create());
+                        Core::ProxyType<MetadataFrame> metaDataFrame(Core::ProxyType<MetadataFrame>::Create());
+
+                        Core::FrameType<0> frame(dataBuffer, TempMetadataBufferSize, TempMetadataBufferSize);
+                        Core::FrameType<0>::Writer writer(frame, 0);
+                        writer.Number<metadataFrameProtocol>(metadataFrameProtocol::UPDATE);
+
                         Control message(control, enabled);
-                        uint16_t length = message.Serialize(dataBuffer, sizeof(dataBuffer));
-                        metaDataFrame->Parameters().Set(length, dataBuffer);
+                        uint16_t length = message.Serialize(dataBuffer + writer.Offset(), sizeof(dataBuffer) - writer.Offset());
+
+                        metaDataFrame->Parameters().Set(writer.Offset() + length, dataBuffer);
 
                         result = _channel.Invoke(metaDataFrame, waitTime);
                     }
 
                     return (result);
                 }
-                void Load(ControlList& info) const {
 
+                void Load(ControlList& info, const string& module) const
+                {
                     if (_channel.IsOpen() == true) {
 
                         // We got a connection to the spawned process side, get the list of traces from
                         // there and send our settings from here...
-                        Core::ProxyType<BaseClass::MetadataFrame> metaDataFrame(Core::ProxyType<BaseClass::MetadataFrame>::Create());
+                        Core::ProxyType<MetadataFrame> metaDataFrame(Core::ProxyType<MetadataFrame>::Create());
 
-                        metaDataFrame->Parameters().Set(0, nullptr);
+                        uint8_t buffer[64];
+                        Core::FrameType<0> frame(buffer, sizeof(buffer), sizeof(buffer));
+                        Core::FrameType<0>::Writer writer(frame, 0);
+
+                        writer.Number<metadataFrameProtocol>(metadataFrameProtocol::CONTROLS);
+                        writer.NullTerminatedText(module);
+
+                        metaDataFrame->Parameters().Set(writer.Offset(), buffer);
 
                         uint32_t result = _channel.Invoke(metaDataFrame, Core::infinite);
 
@@ -600,6 +812,7 @@ namespace WPEFramework {
                             while (index < bufferSize) {
                                 Control entry;
                                 uint16_t length = entry.Deserialize(&(buffer[index]), bufferSize - index);
+                                
                                 if (length == 0) {
                                     TRACE_L1("Could not deserialize all controls !!!");
                                     index = bufferSize;
@@ -619,6 +832,42 @@ namespace WPEFramework {
                     }
                 }
 
+                void Modules(std::vector<string>& modules) const
+                {
+                    if (_channel.IsOpen() == true) {
+                        Core::ProxyType<MetadataFrame> metaDataFrame(Core::ProxyType<MetadataFrame>::Create());
+
+                        uint8_t buffer[1];
+                        Core::FrameType<0> frame(buffer, sizeof(buffer), sizeof(buffer));
+                        Core::FrameType<0>::Writer writer(frame, 0);
+
+                        writer.Number<metadataFrameProtocol>(metadataFrameProtocol::MODULES);
+
+                        metaDataFrame->Parameters().Set(writer.Offset(), buffer);
+
+                        uint32_t result = _channel.Invoke(metaDataFrame, Core::infinite);
+
+                        if (result == Core::ERROR_NONE) {
+                            uint16_t bufferSize = metaDataFrame->Response().Length();
+                            const uint8_t* buffer = metaDataFrame->Response().Value();
+
+                            Core::FrameType<0> frame(const_cast<uint8_t*>(buffer), bufferSize, bufferSize);
+                            Core::FrameType<0>::Reader reader(frame, 0);
+
+                            uint8_t iterator = reader.Number<uint8_t>();
+
+                            while(iterator > 0) {
+                                const string& module = reader.NullTerminatedText();
+
+                                if (std::find(modules.begin(), modules.end(), module) == modules.end()) {
+                                    modules.push_back(module);
+                                }
+                                --iterator;
+                            }
+                        }
+                    }
+                }
+
             private:
                 mutable Core::IPCChannelClientType<Core::Void, false, true> _channel;
             };
@@ -627,9 +876,9 @@ namespace WPEFramework {
             using Factories = std::unordered_map<Core::Messaging::Metadata::type, IEventFactory*>;
 
             // This is the listening end-point, and it is created as the master in which we push messages
-            class MessageDispatcher : public MessageDataBufferType<DataSize, MetadataSize> {
+            class MessageDispatcher : public MessageDataBuffer {
             private:
-                using BaseClass = MessageDataBufferType<DataSize, MetadataSize>;
+                using BaseClass = MessageDataBuffer;
                 class MetaDataBuffer : public Core::IPCChannelClientType<Core::Void, true, true> {
                 private:
                     using BaseClass = Core::IPCChannelClientType<Core::Void, true, true>;
@@ -648,20 +897,34 @@ namespace WPEFramework {
                     public:
                         void Procedure(Core::IPCChannel& source, Core::ProxyType<Core::IIPC>& data) override
                         {
-                            uint8_t outBuffer[MetadataSize];
+                            uint8_t outBuffer[MetadataBufferSize];
 
                             auto message = Core::ProxyType<MetadataFrame>(data);
 
-                            // What is coming in, is an update?
-                            if (message->Parameters().Length() > 0) {
+                            Core::FrameType<0> frame(const_cast<uint8_t*>(message->Parameters().Value()), message->Parameters().Length(), message->Parameters().Length());
+                            Core::FrameType<0>::Reader reader(frame, 0);
+
+                            ASSERT(reader.HasData());
+                            metadataFrameProtocol protocol = reader.Number<metadataFrameProtocol>();
+
+                            if (protocol == metadataFrameProtocol::UPDATE) {
                                 Control newSettings;
-                                newSettings.Deserialize(message->Parameters().Value(), message->Parameters().Length());
+                                newSettings.Deserialize(reader.Data(), reader.Length());
                                 _parent.Update(newSettings, newSettings.Enabled());
                                 message->Response().Set(0, nullptr);
                             }
-                            else {
+                            else if (protocol == metadataFrameProtocol::CONTROLS) {
+                                ASSERT(reader.HasData());
+                                string module = reader.NullTerminatedText();
+                                uint16_t length = _parent.Serialize(outBuffer, sizeof(outBuffer), module);
+                                message->Response().Set(length, outBuffer);
+                            }
+                            else if (protocol == metadataFrameProtocol::MODULES) {
                                 uint16_t length = _parent.Serialize(outBuffer, sizeof(outBuffer));
                                 message->Response().Set(length, outBuffer);
+                            }
+                            else {
+                                ASSERT(false);
                             }
                             source.ReportResponse(data);
                         }
@@ -676,7 +939,7 @@ namespace WPEFramework {
                     MetaDataBuffer& operator=(const MetaDataBuffer&) = delete;
 
                     MetaDataBuffer(MessageUnit& parent, const string& binding)
-                        : BaseClass(Core::NodeId(binding.c_str()), MetadataSize)
+                        : BaseClass(Core::NodeId(binding.c_str()), MetadataBufferSize)
                         , _handler(parent)
                     {
                         _handler.AddRef();
@@ -698,8 +961,10 @@ namespace WPEFramework {
 
             public:
                 MessageDispatcher() = delete;
+                MessageDispatcher(MessageDispatcher&&) = delete;
                 MessageDispatcher(const MessageDispatcher&) = delete;
-                MessageDispatcher& operator= (const MessageDispatcher&) = delete;
+                MessageDispatcher& operator=(MessageDispatcher&&) = delete;
+                MessageDispatcher& operator=(const MessageDispatcher&) = delete;
 
                 /**
                  * @brief Construct a new Message Dispatcher object
@@ -708,13 +973,15 @@ namespace WPEFramework {
                  * @param instanceId number of the instance
                  * @param initialize should dispatcher be initialzied. Should be done only once, on the server side
                  * @param baseDirectory where to place all the necessary files. This directory should exist before creating this class.
+                 * @param dataSize size of the data buffer in bytes
                  * @param socketPort triggers the use of using a IP socket in stead of a domain socket if the port value is not 0.
                  */
-                MessageDispatcher(MessageUnit& parent, const string& identifier, const uint32_t instanceId, const string& basePath, const uint16_t socketPort)
-                    : BaseClass(identifier, instanceId, basePath, socketPort, true)
-                    , _metaDataBuffer(parent, BaseClass::MetadataName()) {
+                MessageDispatcher(MessageUnit& parent, const string& identifier, const uint32_t instanceId, const string& basePath, const uint16_t dataSize, const uint16_t socketPort)
+                    : BaseClass(identifier, instanceId, basePath, dataSize, socketPort, true)
+                    , _metaDataBuffer(parent, BaseClass::MetadataName())
+                {
                 }
-                virtual ~MessageDispatcher() = default;
+                ~MessageDispatcher() = default;
 
             public:
                 bool IsValid() const {
@@ -731,7 +998,8 @@ namespace WPEFramework {
                 : _adminLock()
                 , _dispatcher()
                 , _settings()
-                , _direct() {
+                , _direct()
+            {
             }
 
         public:
@@ -746,23 +1014,30 @@ namespace WPEFramework {
 
         public:
             const string& BasePath() const {
-                return(_settings.BasePath());
+                return (_settings.BasePath());
             }
+
             const string& Identifier() const {
-                return(_settings.Identifier());
+                return (_settings.Identifier());
             }
+
             uint16_t SocketPort() const {
                 return (_settings.SocketPort());
             }
 
-            uint32_t Open(const string& pathName, const uint16_t doorbell, const string& configuration, const bool background, const flush flushMode);
+            uint16_t DataSize() const {
+                return (_settings.DataSize());
+            }
+
+            uint32_t Open(const string& pathName, const Settings::Config& configuration, const bool background, const flush flushMode);
             uint32_t Open(const uint32_t instanceId);
             void Close();
 
             bool Default(const Core::Messaging::Metadata& control) const override;
-            void Push(const Core::Messaging::IStore::Information& info, const Core::Messaging::IEvent* message) override;
+            void Push(const Core::Messaging::MessageInfo& messageInfo, const Core::Messaging::IEvent* message) override;
 
         private:
+            uint16_t Serialize(uint8_t* buffer, const uint16_t length, const string& module);
             uint16_t Serialize(uint8_t* buffer, const uint16_t length);
             void Update(const Core::Messaging::Metadata& control, const bool enable);
             void Update();
@@ -773,5 +1048,6 @@ namespace WPEFramework {
             Settings _settings;
             DirectOutput _direct;
         };
+
     } // namespace Messaging
 }

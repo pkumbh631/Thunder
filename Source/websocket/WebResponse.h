@@ -24,7 +24,7 @@
 #include "URL.h"
 #include "WebRequest.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Web {
     enum WebStatus {
         STATUS_CONTINUE = 100,
@@ -288,7 +288,6 @@ POP_WARNING()
     public:
         static void ToString(const Response& realObject, string& text)
         {
-            uint16_t fillCount = 0;
             bool ready = false;
             class SerializerImpl : public Serializer {
             public:
@@ -300,7 +299,7 @@ POP_WARNING()
                 ~SerializerImpl() override = default;
 
             public:
-                virtual void Serialized(const Response& /* element */)
+                void Serialized(const Response& /* element */) override
                 {
                     _ready = true;
                 }
@@ -319,8 +318,6 @@ POP_WARNING()
                 uint16_t loaded = serializer.Serialize(buffer, sizeof(buffer));
 
                 ASSERT(loaded <= sizeof(buffer));
-
-                fillCount += loaded;
 
                 text += string(reinterpret_cast<char*>(&buffer[0]), loaded);
             }
@@ -342,18 +339,18 @@ POP_WARNING()
 
             public:
                 // The whole request object is deserialised..
-                virtual void Deserialized(Web::Response& element VARIABLE_IS_NOT_USED)
+                void Deserialized(Web::Response& element VARIABLE_IS_NOT_USED) override
                 {
                 }
 
                 // We need a request object to be able to fill it with info
-                virtual Web::Response* Element()
+                Web::Response* Element() override
                 {
                     return (&_destination);
                 }
 
                 // We reached the body, link a proper body to the response..
-                virtual bool LinkBody(Web::Response& request)
+                bool LinkBody(Web::Response& request) override
                 {
                     return (request.HasBody());
                 }

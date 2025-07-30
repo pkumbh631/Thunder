@@ -21,6 +21,7 @@
 #define __FILESYSTEM_H
 
 #include "Portability.h"
+#include "Number.h"
 #include "Time.h"
 
 #ifdef __POSIX__
@@ -33,8 +34,23 @@
 #endif
 #endif
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
+
+    PUSH_WARNING(DISABLE_WARNING_UNUSED_FUNCTIONS)
+
+    static void ParsePathInfo(const string& pathInfo, string& path, uint16_t& permission)
+    {
+        size_t position = pathInfo.find("|");
+        if (position != string::npos) {
+            Core::NumberType<uint16_t> number(pathInfo.substr(position + 1).c_str(), static_cast<uint32_t>(pathInfo.length() - position));
+            permission = number.Value();
+        }
+        path = pathInfo.substr(0, position);
+    }
+
+    POP_WARNING()
+
     class EXTERNAL File {
     public:
 #ifdef __WINDOWS__
@@ -125,6 +141,7 @@ namespace Core {
         explicit File();
         explicit File(const string& fileName);
         explicit File(const File& copy);
+        explicit File(File&& move);
         ~File();
 
         File& operator=(const string& location)
@@ -156,7 +173,33 @@ namespace Core {
             return (*this);
         }
 
-        static string Normalize(const string& input, bool& valid);
+        File& operator=(File&& move) noexcept
+        {
+            if (this != &move) {
+                _name = std::move(move._name);
+                _size = move._size;
+                _attributes = move._attributes;
+                _creation = std::move(move._creation);
+                _modification = std::move(move._modification);
+                _access = std::move(move._access);
+
+                if (_handle != INVALID_HANDLE_VALUE) {
+#ifdef __POSIX__
+                    close(_handle);
+#else
+                    ::CloseHandle(_handle);
+#endif
+                }
+                _handle = move._handle;
+
+                move._handle = INVALID_HANDLE_VALUE;
+                move._size = 0;
+                move._attributes = 0;
+            }
+            return (*this);
+	}
+
+        static string Normalize(const string& input, const bool inScopeOnly = false, const bool allowDirs = false);
 
     public:
         inline static string FileName(const string& name)
@@ -181,6 +224,14 @@ namespace Core {
             }
 
             return (result);
+        }
+        inline static bool IsPathAbsolute(const string& path)
+        {
+#ifdef __WINDOWS__
+            return ((path.size() > 0 && (path[0] == '\\' || path[0] == '/')) || (path.size() > 2 && path[1] == ':' && (path[2] == '\\' || path[2] == '/')));
+#else
+            return (path.size() > 0 && path[0] == '/');
+#endif
         }
         inline static string Extension(const string& name)
         {
@@ -370,6 +421,21 @@ namespace Core {
 #endif
             return (IsOpen());
         }
+        bool Unlink()
+        {
+            bool result = true;
+
+            if (Exists() == true) {
+                Close();
+#ifdef __POSIX__
+                result = (unlink(_name.c_str()) == 0);
+#endif
+#ifdef __WINDOWS__
+                result = (::DeleteFile(_name.c_str()) != FALSE);
+#endif
+            }
+            return (result);
+        }
         bool Destroy()
         {
             bool result = true;
@@ -548,7 +614,7 @@ POP_WARNING()
 
         uint32_t User(const string& userName) const;
         uint32_t Group(const string& groupName) const;
-        uint32_t Permission(uint32_t flags) const;
+        uint32_t Permission(uint16_t flags) const;
 
     private:
         inline static uint32_t ExtensionOffset(const string& name)
@@ -596,20 +662,20 @@ POP_WARNING()
         explicit Directory(const TCHAR location[]);
         Directory(const TCHAR location[], const TCHAR filter[]);
         Directory(const Directory& copy);
+        Directory(Directory&& move);
         ~Directory();
 
     public:
-        static string Normalize(const string& location)
+        static string Normalize(const string& location, const bool inScopeOnly = false)
         {
             string result;
 
             // First see if we are not empy.
             if (location.empty() == false) {
 
-                bool valid;
-                result = File::Normalize(location, valid);
+                result = File::Normalize(location, inScopeOnly, true /* accept directories */);
 
-                if ((valid == true) && ((result.empty() == true) || (result[result.length() - 1] != '/'))) {
+                if ((result.empty() == false) && (result[result.length() - 1] != '/')) {
                     result += '/';
                 }
             }
@@ -624,6 +690,8 @@ POP_WARNING()
             _name = location;
             return (*this);
         }
+
+        bool Exists() const; 
 
 #ifdef __LINUX__
         bool IsValid() const
@@ -719,6 +787,39 @@ POP_WARNING()
         Directory& operator=(const Directory& RHS)
         {
             _name = RHS._name;
+            _filter = "";
+
+#ifdef __LINUX__
+            _dirFD = nullptr;
+            _entry = nullptr;
+#endif
+
+#ifdef __WINDOWS__
+            _dirFD = INVALID_HANDLE_VALUE;
+            noMoreFiles = false;
+#endif
+
+            return (*this);
+        }
+
+        Directory& operator=(Directory&& move) noexcept
+        {
+            if (this != &move) {
+                _name = std::move(move._name);
+                _filter = std::move(move._filter);
+#ifdef __LINUX__
+                _dirFD = move._dirFD;
+                _entry = move._entry;
+                move._dirFD = nullptr;
+                move._entry = nullptr;
+#endif
+#ifdef __WINDOWS__
+                _dirFD = move._dirFD;
+                noMoreFiles = move.noMoreFiles;
+                move._dirFD = INVALID_HANDLE_VALUE;
+                move.noMoreFiles = false;
+#endif
+            }
             return (*this);
         }
 
@@ -755,7 +856,7 @@ POP_WARNING()
 
         uint32_t User(const string& userName) const;
         uint32_t Group(const string& groupName) const;
-        uint32_t Permission(uint32_t flags) const;
+        uint32_t Permission(uint16_t flags) const;
 
     private:
         string _name;

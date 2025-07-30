@@ -21,7 +21,7 @@
 
 #include "Module.h"
 
-namespace WPEFramework {
+namespace Thunder {
 
     namespace Messaging {
 
@@ -36,23 +36,25 @@ namespace WPEFramework {
             DirectOutput()
                 : _baseTime(Core::Time::Now().Ticks())
                 , _isSyslog(false)
-                , _abbreviate(false)
+                , _abbreviate(Core::Messaging::MessageInfo::abbreviate::FULL)
             {
             }
             ~DirectOutput() = default;
 
         public:
-            void Mode(const bool syslog, const bool abbreviated) {
+            void Mode(const bool syslog, const Core::Messaging::MessageInfo::abbreviate abbreviated)
+            {
                 _isSyslog = syslog;
                 _abbreviate = abbreviated;
             }
-            void Output(const Core::Messaging::IStore::Information& info, const Core::Messaging::IEvent* message) const;
+            
+            void Output(const Core::Messaging::MessageInfo& messageInfo, const Core::Messaging::IEvent* message) const;
 
         private:
             uint64_t _baseTime;
             bool _isSyslog;
-            bool _abbreviate;
+            Core::Messaging::MessageInfo::abbreviate _abbreviate;
         };
 
     } // namespace Messaging
-} // namespace WPEFramework
+}

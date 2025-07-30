@@ -24,7 +24,7 @@
 
 #include <atomic>
 
-namespace WPEFramework {
+namespace Thunder {
 
 namespace Exchange {
 
@@ -355,9 +355,10 @@ POP_WARNING()
         }
         inline uint32_t Flush()
         {
+            _channel.Flush();
+
             _responses.Lock();
 
-            _channel.Flush();
             _responses.Flush();
             _buffer.Flush();
 
@@ -422,10 +423,10 @@ POP_WARNING()
         virtual void StateChange()
         {
         }
-        virtual void Send(const typename DATAEXCHANGE::Request& element)
+        virtual void Send(const typename DATAEXCHANGE::Request& element VARIABLE_IS_NOT_USED)
         {
         }
-        virtual void Received(const typename DATAEXCHANGE::Request& element)
+        virtual void Received(const typename DATAEXCHANGE::Request& element VARIABLE_IS_NOT_USED)
         {
         }
 

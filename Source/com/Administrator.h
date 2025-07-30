@@ -23,7 +23,7 @@
 #include "Messages.h"
 #include "Module.h"
 
-namespace WPEFramework {
+namespace Thunder {
 
 namespace ProxyStub {
 
@@ -46,25 +46,34 @@ namespace RPC {
     };
 
     class EXTERNAL Administrator {
-    public:
-        typedef std::vector<ProxyStub::UnknownProxy*> Proxies;
-
     private:
         Administrator();
+
         class RecoverySet {
         public:
             RecoverySet() = delete;
+            RecoverySet(RecoverySet&&) = delete;
             RecoverySet(const RecoverySet&) = delete;
-            RecoverySet& operator= (const RecoverySet&) = delete;
+            RecoverySet& operator=(RecoverySet&&) = delete;
+            RecoverySet& operator=(const RecoverySet&) = delete;
 
             RecoverySet(const uint32_t id, Core::IUnknown* object)
                 : _interfaceId(id)
                 , _interface(object)
-                , _referenceCount(1) {
+                , _referenceCount(1 | (object->AddRef() == Core::ERROR_COMPOSIT_OBJECT ? 0x80000000 : 0)) {
+                
+                // Check if this is a "Composit" object to which the IUnknown points. Composit means 
+                // that the object is owned by another object that controls its lifetime and that 
+                // object will handle the lifetime of this object. It will be released anyway, 
+                // no-recovery needed.
+                object->Release();
             }
             ~RecoverySet() = default;
 
         public:
+            bool IsComposit() const {
+                return ((_referenceCount & 0x80000000) != 0);
+            }
             inline uint32_t Id() const {
                 return (_interfaceId);
             }
@@ -72,16 +81,16 @@ namespace RPC {
                 return (_interface);
             }
             inline void Increment() {
-                _referenceCount++;
+                _referenceCount = ((_referenceCount & 0x7FFFFFFF) + 1) | (_referenceCount & 0x80000000);
             }
-            inline bool Decrement(const uint32_t dropCount = 1) {
-                ASSERT(_referenceCount >= dropCount);
-                _referenceCount -= dropCount;
-                return(_referenceCount > 0);
+            inline bool Decrement(const uint32_t dropCount) {
+                ASSERT((_referenceCount & 0x7FFFFFFF) >= dropCount);
+                _referenceCount = ((_referenceCount & 0x7FFFFFFF) - dropCount) | (_referenceCount & 0x80000000);
+                return((_referenceCount & 0x7FFFFFFF) > 0);
             }
 #ifdef __DEBUG__
             bool Flushed() const {
-                return (_referenceCount == 0);
+                return (((_referenceCount & 0x7FFFFFFF) == 0) || (IsComposit()));
             }
 #endif
 
@@ -90,9 +99,6 @@ namespace RPC {
             Core::IUnknown* _interface;
             uint32_t _referenceCount;
         };
-
-        typedef std::map<const Core::IPCChannel*, Proxies> ChannelMap;
-        typedef std::map<const Core::IPCChannel*, std::list< RecoverySet > > ReferenceMap;
 
         struct EXTERNAL IMetadata {
             virtual ~IMetadata() = default;
@@ -105,6 +111,7 @@ namespace RPC {
         public:
             ProxyType(ProxyType<PROXY>&& ) = delete;
             ProxyType(const ProxyType<PROXY>&) = delete;
+            ProxyType<PROXY>& operator=(ProxyType<PROXY>&&) = delete;
             ProxyType<PROXY>& operator=(const ProxyType<PROXY>&) = delete;
 
             ProxyType() = default;
@@ -112,13 +119,23 @@ namespace RPC {
 
             ProxyStub::UnknownProxy* CreateProxy(const Core::ProxyType<Core::IPCChannel>& channel, const Core::instance_id& implementation, const bool remoteRefCounted) override
             {
-                return (new PROXY(channel, implementation, remoteRefCounted))->Administration();
+                return (*(new PROXY(channel, implementation, remoteRefCounted)));
             }
         };
 
     public:
+        static const string DanglingId;
+
+        using Proxies = std::vector<ProxyStub::UnknownProxy*>;
+        using ChannelMap = std::unordered_map<uint32_t, std::pair<string, Proxies > >;
+        using ReferenceMap = std::unordered_map<uint32_t, std::list< RecoverySet > >;
+        using Stubs = std::unordered_map<uint32_t, ProxyStub::UnknownStub*>;
+        using Factories = std::unordered_map<uint32_t, IMetadata*>;
+
+    public:
         Administrator(Administrator&&) = delete;
         Administrator(const Administrator&) = delete;
+        Administrator& operator=(Administrator&&) = delete;
         Administrator& operator=(const Administrator&) = delete;
 
         virtual ~Administrator();
@@ -126,24 +143,46 @@ namespace RPC {
         static Administrator& Instance();
 
     public:
-        // void action(const Client& client)
+        bool DelegatedReleases() const {
+            return (_delegatedReleases);
+        }
+        void DelegatedReleases(const bool enabled) {
+            _delegatedReleases = enabled;
+        }
+        
         template<typename ACTION>
-        void Visit(ACTION&& action) {
+        bool Allocations(const string& linkId, ACTION&& action) const {
+            bool found = false;
             _adminLock.Lock();
-            for (auto& entry : _channelProxyMap) {
-                action(*entry.first, entry.second);
+            if (linkId.empty() == true) {
+                for (const auto& proxy : _channelProxyMap) {
+                    action(proxy.second.first, proxy.second.second);
+                }
+                action(DanglingId, _danglingProxies);
+                found = true;
+            } 
+            else if (linkId == DanglingId) {
+                action(DanglingId, _danglingProxies);
+                found = true;
+            }
+            else {
+                ChannelMap::const_iterator index(_channelProxyMap.begin());
+                while ((found == false) && (index != _channelProxyMap.end())) {
+                    ASSERT(index->second.second.size() != 0);
+
+                    if (index->second.first != linkId) {
+                        index++;
+                    }
+                    else {
+                        found = true;
+                        action(index->second.first, index->second.second);
+                    }
+                }
             }
             _adminLock.Unlock();
+            return found;
         }
-        // void action(const Client& client)
-        template<typename ACTION>
-        void Visit(ACTION&& action) const {
-            _adminLock.Lock();
-            for (const auto& entry : _channelProxyMap) {
-                action(*entry.first, entry.second);
-            }
-            _adminLock.Unlock();
-        }
+
         template <typename ACTUALINTERFACE, typename PROXY, typename STUB>
         void Announce()
         {
@@ -168,15 +207,17 @@ namespace RPC {
         {
             _adminLock.Lock();
 
-            std::map<uint32_t, ProxyStub::UnknownStub*>::iterator stub(_stubs.find(ACTUALINTERFACE::ID));
+            Stubs::iterator stub(_stubs.find(ACTUALINTERFACE::ID));
             if (stub != _stubs.end()) {
+PUSH_WARNING(DISABLE_WARNING_DELETE_INCOMPLETE)
                 delete stub->second;
+POP_WARNING()
                 _stubs.erase(ACTUALINTERFACE::ID);
             } else {
                 TRACE_L1("Failed to find a Stub for %d.", ACTUALINTERFACE::ID);
             }
 
-            std::map<uint32_t, IMetadata*>::iterator proxy(_proxy.find(ACTUALINTERFACE::ID));
+            Factories::iterator proxy(_proxy.find(ACTUALINTERFACE::ID));
             if (proxy != _proxy.end()) {
                 delete proxy->second;
                 _proxy.erase(ACTUALINTERFACE::ID);
@@ -192,7 +233,7 @@ namespace RPC {
             return (_factory.Element());
         }
 
-        void DeleteChannel(const Core::ProxyType<Core::IPCChannel>& channel, std::list<ProxyStub::UnknownProxy*>& pendingProxies);
+        void DeleteChannel(const Core::ProxyType<Core::IPCChannel>& channel, Proxies& pendingProxies);
 
         template <typename ACTUALINTERFACE>
         ACTUALINTERFACE* ProxyFind(const Core::ProxyType<Core::IPCChannel>& channel, const Core::instance_id& impl)
@@ -218,8 +259,8 @@ namespace RPC {
         // ----------------------------------------------------------------------------------------------------
         // Methods for the Proxy Environment
         // ----------------------------------------------------------------------------------------------------
-        void AddRef(Core::ProxyType<Core::IPCChannel>& channel, void* impl, const uint32_t interfaceId);
-        void Release(Core::ProxyType<Core::IPCChannel>& channel, void* impl, const uint32_t interfaceId, const uint32_t dropCount);
+        void AddRef(const Core::ProxyType<Core::IPCChannel>& channel, void* impl, const uint32_t interfaceId);
+        void Release(const Core::ProxyType<Core::IPCChannel>& channel, void* impl, const uint32_t interfaceId, const uint32_t dropCount);
 
         // ----------------------------------------------------------------------------------------------------
         // Methods for the Stub Environment
@@ -232,48 +273,41 @@ namespace RPC {
         // ----------------------------------------------------------------------------------------------------
         // Stub method for entries that the Stub returns to the callee
         template <typename ACTUALINTERFACE>
-        void RegisterInterface(Core::ProxyType<Core::IPCChannel>& channel, ACTUALINTERFACE* reference)
+        bool RegisterInterface(const Core::ProxyType<Core::IPCChannel>& channel, ACTUALINTERFACE* reference)
         {
-            RegisterInterface(channel, reference, ACTUALINTERFACE::ID);
+            return (RegisterInterface(channel, reference, ACTUALINTERFACE::ID));
         }
-        void RegisterInterface(Core::ProxyType<Core::IPCChannel>& channel, const void* source, const uint32_t id)
+        bool RegisterInterface(const Core::ProxyType<Core::IPCChannel>& channel, const void* source, const uint32_t id)
         {
-            RegisterUnknownInterface(channel, Convert(const_cast<void*>(source), id), id);
-        }
+            bool result = false;
 
-        void UnregisterInterface(Core::ProxyType<Core::IPCChannel>& channel, const Core::IUnknown* source, const uint32_t interfaceId, const uint32_t dropCount)
+            Core::IUnknown* converted = Convert(const_cast<void*>(source), id);
+
+            if (converted != nullptr) {
+                _adminLock.Lock();
+                if (channel.IsValid() == true) {
+                    RegisterUnknown(channel, converted, id);
+                    result = true;
+                }
+                _adminLock.Unlock();
+            }
+            else {
+                TRACE_L1("Failed to find a Stub for interface 0x%08x!", id);
+            }
+
+            return (result);
+        }
+        void UnregisterInterface(const Core::ProxyType<Core::IPCChannel>& channel, const Core::IUnknown* source, const uint32_t interfaceId, const uint32_t dropCount)
         {
             _adminLock.Lock();
 
-            ReferenceMap::iterator index(_channelReferenceMap.find(channel.operator->()));
-
-            if (index != _channelReferenceMap.end()) {
-                std::list< RecoverySet >::iterator element(index->second.begin());
-
-                while ( (element != index->second.end()) && ((element->Id() != interfaceId) || (element->Unknown() != source)) ) {
-                    element++;
-                }
-
-                ASSERT(element != index->second.end());
-
-                if (element != index->second.end()) {
-                    if (element->Decrement(dropCount) == false) {
-                        index->second.erase(element);
-                        if (index->second.size() == 0) {
-                            _channelReferenceMap.erase(index);
-                            TRACE_L3("Unregistered interface %p(%u).", source, interfaceId);
-                        }
-                    }
-                } else {
-                    printf("====> Unregistering an interface [0x%x, %d] which has not been registered!!!\n", interfaceId, Core::ProcessInfo().Id());
-                }
-            } else {
-                printf("====> Unregistering an interface [0x%x, %d] from a non-existing channel!!!\n", interfaceId, Core::ProcessInfo().Id());
+            if (channel.IsValid() == true) {
+                UnregisterUnknown(channel, source, interfaceId, dropCount);
             }
 
             _adminLock.Unlock();
         }
-        void UnregisterProxy(const ProxyStub::UnknownProxy& proxy);
+        bool UnregisterUnknownProxy(const ProxyStub::UnknownProxy& proxy, uint32_t channelId);
 
    private:
         // ----------------------------------------------------------------------------------------------------
@@ -281,16 +315,58 @@ namespace RPC {
         // ----------------------------------------------------------------------------------------------------
         Core::IUnknown* Convert(void* rawImplementation, const uint32_t id);
         const Core::IUnknown* Convert(void* rawImplementation, const uint32_t id) const;
-        void RegisterUnknownInterface(Core::ProxyType<Core::IPCChannel>& channel, Core::IUnknown* source, const uint32_t id);
+        void RegisterUnknown(const Core::ProxyType<Core::IPCChannel>& channel, Core::IUnknown* source, const uint32_t id);
+        void UnregisterUnknown(const Core::ProxyType<Core::IPCChannel>& channel, const Core::IUnknown* source, const uint32_t interfaceId, const uint32_t dropCount);
 
     private:
         // Seems like we have enough information, open up the Process communcication Channel.
         mutable Core::CriticalSection _adminLock;
-        std::map<uint32_t, ProxyStub::UnknownStub*> _stubs;
-        std::map<uint32_t, IMetadata*> _proxy;
+        Stubs _stubs;
+        Factories _proxy;
         Core::ProxyPoolType<InvokeMessage> _factory;
         ChannelMap _channelProxyMap;
         ReferenceMap _channelReferenceMap;
+        Proxies _danglingProxies;
+
+        // Delegated release, if enabled, will release references held by connections 
+        // that close but still have references on objects in this process space.
+        // Whenever an interface is exposed to the otherside over the channel, it is
+        // recorded with this channel, if we received an Addref from the other side
+        // to keep the object here alive.
+        // If the connection dies and the object is still in this recorded set, it 
+        // means it will never receive the Release for it. Effectively that will mean 
+        // we have a leak on this object, since the Addref was done on behalf of the 
+        // other side of the link but the Release will never follow...... Ooops...
+        // Since we have this administartion and we know the channels is closed, we 
+        // could potentially do the Release for the otherside since we knwo the channel
+        // went done. This is a very welcome feature but it was only introduced in
+        // Thunder R3.X. 
+        // One of the selling reasons of having garbage collected languages is that you 
+        // do not need to be aware of the lifetime of object. No need to pair Addrefs 
+        // with Releases and Mallocs with Free's or new's with deletes. 
+        // C++ languages however expect you to know the lifetime and we know that this
+        // is one of the most made mistakes. 
+        // As we value stability of software and hate debuging crashes if we move to
+        // a new release this feature of automatic cleanup can backfire. If the software
+        // (read plugins) are poorly designed/coded and have an incorrect lifetime 
+        // management or the plugin is *not* coded/designed for non-happy day scenarios,
+        // these plugins might have been running succesfully be the lack of this feature 
+        // (at the cost of a memory leak but that is not so visible). Turning on this 
+        // feature might correctly cleanup object that in the past where leaking and will
+        // now lead to segmentation faults.
+        // Typically the first suspect is than the *new* release. As we have seen very 
+        // creative plugin implementations and from a Thunder team we have a limit amount
+        // of resources to investigate all these creative ways of implementing the plugin
+        // we allow for a flag to turn this *very* usefull feature off. 
+        // Whenever, after an upgrade to this new release, unexpected crashes are reported
+        // with an out-of-process plugins, we will ask the plugin developper to retest but 
+        // than with this feature off (flag in the config, no rebuild required). If the
+        // crash can than nolonger be reproduced we suggest the plugin developper to 
+        // check the lifetime handling on all object in his plugin (AddRef/Releases) and
+        // check the code for cleaning up in case of unexpected out-of-process plugin part
+        // shutdown.
+        // If the same crash continues, please reach out to the Thunder team for assitance!  
+        bool _delegatedReleases;
     };
 
     class EXTERNAL Job : public Core::IDispatch {
@@ -298,27 +374,34 @@ namespace RPC {
         Job()
             : _message()
             , _channel()
-            , _handler(nullptr)
         {
         }
-        Job(Core::IPCChannel& channel, const Core::ProxyType<Core::IIPC>& message, Core::IIPCServer* handler)
+        Job(Core::IPCChannel& channel, const Core::ProxyType<Core::IIPC>& message)
             : _message(message)
             , _channel(channel)
-            , _handler(handler)
+        {
+        }
+        Job(Job&& move) noexcept
+            : _message(std::move(move._message))
+            , _channel(std::move(move._channel))
         {
         }
         Job(const Job& copy)
             : _message(copy._message)
             , _channel(copy._channel)
-            , _handler(copy._handler)
         {
         }
         ~Job() override = default;
 
+        Job& operator=(Job&& rhs) noexcept {
+            _message = std::move(rhs._message);
+            _channel = std::move(rhs._channel);
+
+            return (*this);
+        }
         Job& operator=(const Job& rhs) {
             _message = rhs._message;
             _channel = rhs._channel;
-            _handler = rhs._handler;
 
             return (*this);
         }
@@ -332,13 +415,11 @@ namespace RPC {
         {
             _message.Release();
             _channel.Release();
-            _handler = nullptr;
         }
-        void Set(Core::IPCChannel& channel, const Core::ProxyType<Core::IIPC>& message, Core::IIPCServer* handler)
+        void Set(Core::IPCChannel& channel, const Core::ProxyType<Core::IIPC>& message)
         {
             _message = message;
             _channel = Core::ProxyType<Core::IPCChannel>(channel);
-            _handler = handler;
         }
         string Identifier() const override {
             string identifier;
@@ -353,29 +434,27 @@ namespace RPC {
         }
         void Dispatch() override
         {
-            if (_message->Label() == InvokeMessage::Id()) {
-                Invoke(_channel, _message);
-            } else {
-                ASSERT(_message->Label() == AnnounceMessage::Id());
-                ASSERT(_handler != nullptr);
+            ASSERT(_message->Label() == InvokeMessage::Id());
 
-                _handler->Procedure(*_channel, _message);
-            }
+            Invoke(_channel, _message);
         }
 
         static void Invoke(Core::ProxyType<Core::IPCChannel>& channel, Core::ProxyType<Core::IIPC>& data)
         {
             Core::ProxyType<InvokeMessage> message(data);
             ASSERT(message.IsValid() == true);
-            _administrator.Invoke(channel, message);
-            channel->ReportResponse(data);
-
+            if (message->Parameters().IsValid() == false) {
+                SYSLOG(Logging::Error, (_T("COMRPC Announce message incorrectly formatted!")));
+            }
+            else {
+                _administrator.Invoke(channel, message);
+                channel->ReportResponse(data);
+            }
         }
 
     private:
         Core::ProxyType<Core::IIPC> _message;
         Core::ProxyType<Core::IPCChannel> _channel;
-        Core::IIPCServer* _handler;
 
         static Core::ProxyPoolType<Job> _factory;
         static Administrator& _administrator;
@@ -384,31 +463,25 @@ namespace RPC {
     struct EXTERNAL IIPCServer : public Core::IIPCServer {
         ~IIPCServer() override = default;
 
-        virtual void Announcements(Core::IIPCServer* announces) = 0;
         virtual void Submit(const Core::ProxyType<Core::IDispatch>& job) = 0;
         virtual void Revoke(const Core::ProxyType<Core::IDispatch>& job) = 0;
     };
 
     class EXTERNAL InvokeServer : public IIPCServer {
     public:
+        InvokeServer(InvokeServer&&) = delete;
         InvokeServer(const InvokeServer&) = delete;
+        InvokeServer& operator=(InvokeServer&&) = delete;
         InvokeServer& operator=(const InvokeServer&) = delete;
 
-        InvokeServer(Core::IWorkerPool* workers)
+        explicit InvokeServer(Core::IWorkerPool* workers)
             : _threadPoolEngine(*workers)
-            , _handler(nullptr)
         {
             ASSERT(workers != nullptr);
         }
-        ~InvokeServer()
-        {
-        }
+        ~InvokeServer() override = default;
 
-        void Announcements(Core::IIPCServer* announces) override
-        {
-            ASSERT((announces != nullptr) ^ (_handler != nullptr));
-            _handler = announces;
-        }
+    public:
         void Submit(const Core::ProxyType<Core::IDispatch>& job) override {
             _threadPoolEngine.Submit(job);
         }
@@ -421,13 +494,12 @@ namespace RPC {
         {
             Core::ProxyType<Job> job(Job::Instance());
 
-            job->Set(source, message, _handler);
+            job->Set(source, message);
             _threadPoolEngine.Submit(Core::ProxyType<Core::IDispatch>(job));
         }
 
     private:
         Core::IWorkerPool& _threadPoolEngine;
-        Core::IIPCServer* _handler;
     };
 
     template <const uint8_t THREADPOOLCOUNT, const uint32_t STACKSIZE, const uint32_t MESSAGESLOTS>
@@ -435,7 +507,9 @@ namespace RPC {
     private:
         class Dispatcher : public Core::ThreadPool::IDispatcher {
         public:
+            Dispatcher(Dispatcher&&) = delete;
             Dispatcher(const Dispatcher&) = delete;
+            Dispatcher& operator=(Dispatcher&&) = delete;
             Dispatcher& operator=(const Dispatcher&) = delete;
 
             Dispatcher() = default;
@@ -452,25 +526,20 @@ namespace RPC {
         };
 
     public:
+        InvokeServerType(InvokeServerType<THREADPOOLCOUNT,STACKSIZE,MESSAGESLOTS>&&) = delete;
         InvokeServerType(const InvokeServerType<THREADPOOLCOUNT,STACKSIZE,MESSAGESLOTS>&) = delete;
+        InvokeServerType<THREADPOOLCOUNT,STACKSIZE,MESSAGESLOTS>& operator = (InvokeServerType<THREADPOOLCOUNT,STACKSIZE,MESSAGESLOTS>&&) = delete;
         InvokeServerType<THREADPOOLCOUNT,STACKSIZE,MESSAGESLOTS>& operator = (const InvokeServerType<THREADPOOLCOUNT,STACKSIZE,MESSAGESLOTS>&) = delete;
 
         InvokeServerType()
             : _dispatcher()
             , _threadPoolEngine(THREADPOOLCOUNT,STACKSIZE,MESSAGESLOTS, &_dispatcher, nullptr, nullptr, nullptr)
-            , _handler(nullptr)
         {
             _threadPoolEngine.Run();
         }
         ~InvokeServerType() override
         {
             _threadPoolEngine.Stop();
-        }
-
-        void Announcements(Core::IIPCServer* announces) override
-        {
-            ASSERT((announces != nullptr) ^ (_handler != nullptr));
-            _handler = announces;
         }
         void Submit(const Core::ProxyType<Core::IDispatch>& job) override {
             _threadPoolEngine.Submit(job, Core::infinite);
@@ -493,21 +562,17 @@ namespace RPC {
                 TRACE_L1("_threadPoolEngine.Pending() == %d", _threadPoolEngine.Pending());
             }
 
-            if (message->Label() == AnnounceMessage::Id()) {
-                ASSERT(_handler != nullptr);
-                _handler->Procedure(source, message);
-            } else {
-                Core::ProxyType<RPC::Job> job(Job::Instance());
+            ASSERT(message->Label() == InvokeMessage::Id());
 
-                job->Set(source, message, _handler);
-                _threadPoolEngine.Submit(Core::ProxyType<Core::IDispatch>(job), Core::infinite);
-            }
+            Core::ProxyType<RPC::Job> job(Job::Instance());
+
+            job->Set(source, message);
+            _threadPoolEngine.Submit(Core::ProxyType<Core::IDispatch>(job), Core::infinite);
         }
 
     private:
         Dispatcher _dispatcher;
         Core::ThreadPool _threadPoolEngine;
-        Core::IIPCServer* _handler;
     };
 }
 

@@ -31,7 +31,7 @@
 // CLASS: Thread
 //-----------------------------------------------------------------------------------------------
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
 
     //Definitions of static members
@@ -53,6 +53,9 @@ namespace Core {
 #else
         , m_hThreadInstance()
         , m_ThreadId(0)
+#ifdef __POSIX__
+        , m_threadName("")
+#endif
 #endif
     {
         TRACE_L5("Constructor Thread <%p>", (this));
@@ -81,13 +84,14 @@ namespace Core {
         ASSERT(err == 0);
 
         if ((err == 0) && (stackSize != 0)) {
-            size_t new_size = (stackSize < PTHREAD_STACK_MIN) ? PTHREAD_STACK_MIN : stackSize;
+            size_t new_size = (stackSize < static_cast<uint32_t>(PTHREAD_STACK_MIN)) ? PTHREAD_STACK_MIN : stackSize;
             err = pthread_attr_setstacksize(&attr, new_size);
             ASSERT(err == 0);
         }
 
         // If there is no thread, the "new" thread can also not free the destructor,
         // then it is up to us.
+
         if ((err != 0) || (pthread_create(&m_hThreadInstance, &attr, (void* (*)(void*))Thread::StartThread, this) != 0))
 #endif
         {
@@ -96,19 +100,22 @@ namespace Core {
             m_sigExit.SetEvent();
         }
 
+        std::string convertedName;
+        if (threadName != nullptr) {
+            Core::ToString(threadName, convertedName);
+        }
+
 #ifdef __POSIX__
         err = pthread_attr_destroy(&attr);
         ASSERT(err == 0);
-
-        m_ThreadId = (uint32_t)(size_t)m_hThreadInstance;
-#endif
-
-        if (threadName != nullptr) {
-            std::string convertedName;
-            Core::ToString(threadName, convertedName);
-
+        m_ThreadId = m_hThreadInstance;
+        m_threadName = convertedName;
+#else
+        if (convertedName.empty() != true) {
             ThreadName(convertedName.c_str());
         }
+#endif
+
     }
     Thread::~Thread()
     {
@@ -125,26 +132,29 @@ namespace Core {
 #endif
     }
 
-    ::ThreadId Thread::ThreadId()
+    thread_id Thread::ThreadId()
     {
 #ifdef __WINDOWS__
 PUSH_WARNING(DISABLE_WARNING_CONVERSION_TO_GREATERSIZE)
-        return (reinterpret_cast<::ThreadId>(::GetCurrentThreadId()));
+        return (::GetCurrentThreadId());
 POP_WARNING()
 #else
-        return static_cast<::ThreadId>(pthread_self());
+        return static_cast<thread_id>(pthread_self());
 #endif
     }
 
 #ifdef __WINDOWS__
     void Thread::StartThread(Thread* cClassPointer)
-#endif
-
-#ifdef __POSIX__
-        void* Thread::StartThread(Thread* cClassPointer)
+#else
+    void* Thread::StartThread(Thread* cClassPointer)
 #endif
     {
+
 #ifdef __POSIX__
+        if (cClassPointer->ThreadName().empty() != true) {
+            cClassPointer->ThreadName(cClassPointer->ThreadName().c_str());
+        }
+
         // It is the responsibility of the main app to make sure all threads created are stopped properly.
         // No jumping and bailing out without a proper closure !!!!
         sigset_t mask;
@@ -439,19 +449,27 @@ POP_WARNING()
         }
 #endif // __DEBUG__
 #else
+#ifdef __APPLE__
+        int rc = pthread_setname_np(threadName);
+#else
         int rc = pthread_setname_np(m_hThreadInstance, threadName);
+#endif
         if (rc == ERANGE) {
             // name too long - max 16 chars allowed
             char truncName[16];
             strncpy(truncName, threadName, sizeof(truncName));
             truncName[15] = '\0';
+#ifdef __APPLE__
+            pthread_setname_np(truncName);
+#else
             pthread_setname_np(m_hThreadInstance, truncName);
+#endif
         }
 #endif // __WINDOWS__
     }
 
 #ifdef __DEBUG__
-    int Thread::GetCallstack(void** buffer, int size)
+    int Thread::GetCallstack(VARIABLE_IS_NOT_USED void** buffer, VARIABLE_IS_NOT_USED int size)
     {
 #if defined(THUNDER_BACKTRACE)
         return GetCallStack(m_hThreadInstance, buffer, size);

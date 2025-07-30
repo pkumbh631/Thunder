@@ -17,6 +17,8 @@
 
 add_executable(fdpassing main.cpp)
 
+target_compile_options (fdpassing PRIVATE -Wno-psabi)
+
 target_link_libraries(fdpassing PRIVATE
     CompileSettingsDebug::CompileSettingsDebug
     ${NAMESPACE}Core::${NAMESPACE}Core
@@ -24,5 +26,5 @@ target_link_libraries(fdpassing PRIVATE
 )
 
 if(EXAMPLE_PRIVILEGEDREQUEST)
-install(TARGETS fdpassing DESTINATION bin)
+install(TARGETS fdpassing DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT ${NAMESPACE}_Test)
 endif()

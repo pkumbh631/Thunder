@@ -32,14 +32,16 @@
 // ---- Referenced classes and types ----
 
 // ---- Helper functions ----
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
     class EXTERNAL Singleton {
     private:
         class EXTERNAL SingletonList {
-        private:
-            SingletonList(const SingletonList&);
-            SingletonList& operator=(const SingletonList&);
+        public:
+            SingletonList(SingletonList&&) = delete;
+            SingletonList(const SingletonList&) = delete;
+            SingletonList& operator=(SingletonList&&) = delete;
+            SingletonList& operator=(const SingletonList&) = delete;
 
         public:
             SingletonList();
@@ -53,9 +55,11 @@ namespace Core {
             std::list<Singleton*> m_Singletons;
         };
 
-    private:
-        Singleton(const Singleton&);
-        Singleton& operator=(const Singleton&);
+    public:
+        Singleton(Singleton&&) = delete;
+        Singleton(const Singleton&) = delete;
+        Singleton& operator=(Singleton&&) = delete;
+        Singleton& operator=(const Singleton&) = delete;
 
     public:
         inline Singleton(void** realDeal) : _realDeal(realDeal)
@@ -103,6 +107,7 @@ namespace Core {
         {
            ListInstance().Unregister(this);
            ASSERT(g_TypedSingleton != nullptr);
+           g_TypedSingleton = nullptr;
         }
 
     public:
@@ -134,7 +139,7 @@ namespace Core {
         }
 
         inline static SINGLETON& Instance() {
-            // As available does not see through friend clas/protected 
+            // As available does not see through friend clas/protected
             // declarations, we can not rely on the output of it.
             // If this Instance method id called, assume it has a
             // default constructor..
@@ -160,14 +165,18 @@ namespace Core {
 
             ASSERT(g_TypedSingleton != nullptr);
         }
-        inline static void Dispose()
+        inline static bool Dispose()
         {
             // Unprotected. Make sure the dispose is *ONLY* called
             // after all usage of the singlton is completed!!!
+            bool disposed = false;
             if (g_TypedSingleton != nullptr) {
 
                 delete g_TypedSingleton;
+                // note destructor will set g_TypedSingleton to nullptr;
+                disposed = true;
             }
+            return disposed;
         }
 
     private:
@@ -216,17 +225,21 @@ namespace Core {
             : _wrapped(ProxyType<PROXYTYPE>::Create(std::forward<Args>(args)...))
         {
         }
+        ~SingletonProxyType()
+        {
+            ASSERT(ProxyType<PROXYTYPE>::LastRefAccessor::LastRef(_wrapped) == true);
+        }
 
     public:
         SingletonProxyType(const SingletonProxyType<PROXYTYPE>&) = delete;
         SingletonProxyType& operator=(const SingletonProxyType<PROXYTYPE>&) = delete;
 
-        static ProxyType<PROXYTYPE> Instance()
+        static ProxyType<PROXYTYPE>& Instance()
         {
             return (SingletonType<SingletonProxyType<PROXYTYPE>>::Instance()._wrapped);
         }
         template <typename... Args>
-        DEPRECATED static ProxyType<PROXYTYPE> Instance(Args&&... args)
+        DEPRECATED static ProxyType<PROXYTYPE>& Instance(Args&&... args)
         {
             return (SingletonType<SingletonProxyType<PROXYTYPE>>::Instance(std::forward<Args>(args)...)._wrapped);
         }
@@ -234,6 +247,80 @@ namespace Core {
     private:
         ProxyType<PROXYTYPE> _wrapped;
     };
+
+    template<typename SINGLETON>
+    class UniqueType {
+    private:
+        using available = std::is_default_constructible<SINGLETON>;
+
+        class Info {
+        public:
+            Info(Info&&) = delete;
+            Info(const Info&) = delete;
+            Info& operator=(Info&&) = delete;
+            Info& operator=(const Info&) = delete;
+
+            Info()
+                : _adminLock()
+                , _refCount(1)
+                , _entry(nullptr) {
+            }
+            ~Info () = default;
+
+        public:
+            SINGLETON& Instance() {
+                _adminLock.Lock();
+                if (_entry == nullptr) {
+                    _entry = new SINGLETON();
+                }
+                else {
+                    ++_refCount;
+                }
+                _adminLock.Unlock();
+
+                return (*_entry);
+            }
+            void Drop() {
+                _adminLock.Lock();
+                if (_refCount == 1) {
+                    delete _entry;
+                    _entry = nullptr;
+                }
+                else {
+                    --_refCount;
+                }
+                _adminLock.Unlock();
+            }
+
+        public:
+            CriticalSection _adminLock;
+            uint32_t        _refCount;
+            SINGLETON*      _entry;
+        };
+
+    public:
+        UniqueType(UniqueType<SINGLETON>&&) = delete;
+        UniqueType(const UniqueType<SINGLETON>&) = delete;
+        UniqueType<SINGLETON> operator=(SingletonType<SINGLETON>&&) = delete;
+        UniqueType<SINGLETON> operator=(const SingletonType<SINGLETON>&) = delete;
+
+        UniqueType() = default;
+        ~UniqueType() = default;
+
+        SINGLETON& Instance() {
+            return (_singleton.Instance());
+        }
+        void Drop() {
+            return (_singleton.Drop());
+        }
+
+    private:
+        static Info _singleton;
+    };
+
+    template <typename SINGLETONTYPE>
+    EXTERNAL_HIDDEN typename UniqueType<SINGLETONTYPE>::Info  UniqueType<SINGLETONTYPE>::_singleton;
+
 }
 } // namespace Core
 

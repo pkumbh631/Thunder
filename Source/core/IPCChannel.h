@@ -30,7 +30,7 @@
 #include "Trace.h"
 #include "TypeTraits.h"
 
-namespace WPEFramework {
+namespace Thunder {
 namespace Core {
 
     template <typename EXTENSION, const bool LISTENING, const bool INTERNALFACTORY>
@@ -202,8 +202,6 @@ namespace Core {
             , _connector()
             , _bufferSize(bufferSize)
         {
-            ASSERT(node.IsValid() == true);
-
             static_assert(INTERNALFACTORY == true, "This constructor can only be called if you specify an INTERNAL factory");
 
             if (node.IsValid() == true) {
@@ -225,8 +223,6 @@ namespace Core {
             , _connector()
             , _bufferSize(bufferSize)
         {
-            ASSERT(node.IsValid() == true);
-
             static_assert(INTERNALFACTORY == false, "This constructor can only be called if you specify an EXTERNAL factory");
 
             if (node.IsValid() == true) {
@@ -256,11 +252,18 @@ namespace Core {
         }
 
     public:
+        uint32_t Open(const uint32_t waitTime) {
+            ASSERT(_connector.empty() == false);
+            return (SocketListner::Open(waitTime));
+        }
+        uint32_t Close(const uint32_t waitTime) {
+            return (SocketListner::Close(waitTime));
+        }
         // void action(const Client& client)
         template<typename ACTION>
         void Visit(ACTION&& action) {
             _adminLock.Lock();
-            for (const std::pair< EXTENSION*, ProxyType<Client>>& entry : _clients) {
+            for (const std::pair< EXTENSION* const, ProxyType<Client>>& entry : _clients) {
                 action(*(entry.second));
             }
             _adminLock.Unlock();
@@ -269,7 +272,7 @@ namespace Core {
         template<typename ACTION>
         void Visit(ACTION&& action) const {
             _adminLock.Lock();
-            for (const std::pair< EXTENSION*, ProxyType<Client>>& entry : _clients) {
+            for (const std::pair< EXTENSION* const, ProxyType<Client>>& entry : _clients) {
                 action(*(entry.second));
             }
             _adminLock.Unlock();
@@ -312,10 +315,12 @@ namespace Core {
         {
             _adminLock.Lock();
 
-			ASSERT(handler.IsValid() == true);
+            ASSERT(handler.IsValid() == true);
             ASSERT(_handlers.find(id) == _handlers.end());
 
-            _handlers.emplace(id, handler);
+	    if (_handlers.find(id) == _handlers.end()) {
+                _handlers.emplace(id, handler);
+            }
 
             _adminLock.Unlock();
         }
