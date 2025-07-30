@@ -52,6 +52,9 @@ add_library(${TARGET_PROXYSTUBS} SHARED
         ${CMAKE_CURRENT_BINARY_DIR}/generated/ProxyStubs_Dispatcher.cpp
         Module.cpp
         )
+add_library(AppC SHARED AppC.cpp)
+target_link_libraries(AppC PRIVATE ${PLUGINS_LIBRARIES})
+install(TARGETS AppC DESTINATION lib/plugins)
 
 set(PUBLIC_HEADERS
         Channel.h
